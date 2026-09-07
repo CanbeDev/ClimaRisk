@@ -7,3 +7,4 @@ psycopg2-binary>=2.9
 shapely>=2.0
 geopandas>=0.14
 apscheduler>=3.10
+pytest>=8.0

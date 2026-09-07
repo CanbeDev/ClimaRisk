@@ -3,13 +3,14 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.db.pool import check_db_connection, get_connection
 from app.db.repository import HazardRepository
 from app.ingestion.backfill import run_backfill
 from app.ingestion.polygons import run_polygon_enrichment
 from app.ingestion.realtime import run_realtime_poll
+from app.routes.deps import require_ingest_api_key
 
 router = APIRouter()
 
@@ -26,7 +27,7 @@ def health_db() -> dict[str, str]:
     raise HTTPException(status_code=503, detail="Database unavailable")
 
 
-@router.post("/ingest/realtime")
+@router.post("/ingest/realtime", dependencies=[Depends(require_ingest_api_key)])
 def trigger_realtime() -> dict[str, Any]:
     stats = run_realtime_poll()
     return {
@@ -38,7 +39,7 @@ def trigger_realtime() -> dict[str, Any]:
     }
 
 
-@router.post("/ingest/backfill")
+@router.post("/ingest/backfill", dependencies=[Depends(require_ingest_api_key)])
 def trigger_backfill(
     from_date: Optional[date] = Query(default=None),
     to_date: Optional[date] = Query(default=None),
@@ -53,7 +54,7 @@ def trigger_backfill(
     }
 
 
-@router.post("/ingest/polygons")
+@router.post("/ingest/polygons", dependencies=[Depends(require_ingest_api_key)])
 def trigger_polygons(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
     stats = run_polygon_enrichment(limit=limit)
     return {
@@ -65,7 +66,7 @@ def trigger_polygons(limit: int = Query(default=100, ge=1, le=500)) -> dict[str,
     }
 
 
-@router.get("/ingest/runs")
+@router.get("/ingest/runs", dependencies=[Depends(require_ingest_api_key)])
 def list_ingestion_runs(limit: int = Query(default=20, ge=1, le=100)) -> list[dict[str, Any]]:
     with get_connection() as conn:
         repo = HazardRepository(conn)

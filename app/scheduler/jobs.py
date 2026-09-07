@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.ingestion.backfill import run_backfill
 from app.ingestion.polygons import run_polygon_enrichment
 from app.ingestion.realtime import run_realtime_poll
+from app.services.parametric import evaluate_all_events
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +28,15 @@ def _safe_polygons() -> None:
         run_polygon_enrichment()
     except Exception:
         log.exception("Scheduled polygon enrichment failed")
+
+
+def _safe_parametric() -> None:
+    # Same coarse policy as the ingestion jobs: a failed sweep is logged and
+    # waits for the next interval tick rather than retrying sooner.
+    try:
+        evaluate_all_events()
+    except Exception:
+        log.exception("Scheduled parametric evaluation failed")
 
 
 def start_scheduler() -> BackgroundScheduler:
@@ -54,12 +64,22 @@ def start_scheduler() -> BackgroundScheduler:
             max_instances=1,
             coalesce=True,
         )
+        if settings.parametric_auto_evaluate:
+            _scheduler.add_job(
+                _safe_parametric,
+                trigger=IntervalTrigger(hours=settings.parametric_interval_hours),
+                id="parametric_eval",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
 
     _scheduler.start()
     log.info(
-        "Scheduler started (realtime=%sh, polygons=%sh)",
+        "Scheduler started (realtime=%sh, polygons=%sh, parametric=%s)",
         settings.gdacs_poll_interval_hours,
         settings.gdacs_polygon_interval_hours,
+        f"{settings.parametric_interval_hours}h" if settings.parametric_auto_evaluate else "off",
     )
     return _scheduler
 

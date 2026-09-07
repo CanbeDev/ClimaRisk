@@ -5,10 +5,16 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.db.pool import close_pool, init_pool
-from app.routes.health import router
+from app.routes.assets import router as assets_router
+from app.routes.exposure import router as exposure_router
+from app.routes.hazards import router as hazards_router
+from app.routes.health import router as health_router
+from app.routes.parametric import router as parametric_router
+from app.routes.trends import router as trends_router
 from app.scheduler.jobs import start_scheduler, stop_scheduler
 
 log = logging.getLogger(__name__)
@@ -43,4 +49,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.include_router(router)
+settings = get_settings()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[origin.strip() for origin in settings.cors_allowed_origins.split(",") if origin.strip()],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
+app.include_router(health_router)
+app.include_router(exposure_router)
+app.include_router(hazards_router)
+app.include_router(assets_router)
+app.include_router(trends_router)
+app.include_router(parametric_router)

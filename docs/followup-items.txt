@@ -1,0 +1,48 @@
+ClimRisk — Follow-up items (not fixed, judgment calls)
+Captured: 2026-09-05
+Context: found during a code review pass after fixing the /hazards hardcoded-ZAF bug
+and the GDACSClient retry-bypass bug (both of those ARE fixed already — this list is
+only the items that were flagged but deliberately left alone pending your decision).
+
+1. /assets has no country scoping
+   File: app/routes/assets.py
+   The /hazards endpoint now filters by settings.gdacs_country_filter (fixed), but
+   /assets returns every row in the table with no iso3 filter at all. Harmless today
+   if your asset data is ZAF-only, but inconsistent with /hazards, and will silently
+   return other countries' assets if this table ever holds multi-country data.
+   Possible fix: add `WHERE iso3 = %s` using the same settings.gdacs_country_filter,
+   mirroring hazards.py.
+
+2. idx_hazard_events_zaf_fromdate migration index is still ZAF-hardcoded
+   File: db/migrations/001_hazard_events.sql (line ~73)
+   This is a partial index: `... WHERE iso3 = 'ZAF'`. Now that /hazards uses a
+   parameterized country filter, Postgres may not use this partial index if the
+   configured country ever changes from ZAF (a parameterized query filtering on a
+   variable normally can't match a partial index's fixed predicate). Performance-only
+   concern — idx_hazard_events_iso3 (plain btree) still covers correctness.
+   Possible fix: either drop the partial index in favor of relying on the plain iso3
+   index, or add a new migration if/when a second country is actually configured.
+
+3. upsert_event's conflict-resolution only guards `centroid` against stale overwrites
+   File: app/db/repository.py (HazardRepository.upsert_event, ON CONFLICT clause)
+   On re-ingestion, `centroid` is only overwritten if the incoming row's date_modified
+   is newer (or either side is null) — a deliberate staleness guard. Every other field
+   (alert_level, severity_value, severity_text, is_current, title, description, etc.)
+   is unconditionally overwritten by whatever the latest run saw, with no equivalent
+   staleness check. Probably fine in practice (GDACS episode data rarely regresses),
+   but if backfill and realtime ever race on the same episode, only centroid is
+   protected from going backwards.
+   Possible fix: extend the same CASE/date_modified guard to the other mutable fields,
+   or confirm this asymmetry is intentional and document it.
+
+4. Test suite triggers the full app lifespan (DB pool + APScheduler)
+   File: tests/test_exposure.py (client fixture, `with TestClient(app) as test_client`)
+   FastAPI's lifespan runs on TestClient startup, which calls init_pool() and
+   start_scheduler() using whatever .env is active when pytest runs. If
+   SCHEDULER_ENABLED=true (the default), a real background scheduler thread starts
+   during test runs. Low risk in practice — the realtime/polygon jobs are on 2h/6h
+   intervals so they won't fire during a normal test run — but pytest isn't fully
+   hermetic here, and this could surprise someone running tests against a shared or
+   production-like .env.
+   Possible fix: override SCHEDULER_ENABLED=false (and maybe point at a disposable
+   test DB) via a conftest.py fixture or environment override before importing app.

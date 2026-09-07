@@ -61,6 +61,7 @@ def run_backfill(
 
                 if len(features) < 100:
                     break
+                client.polite_delay()
                 page_number += 1
 
             status = resolve_run_status(total_stats)

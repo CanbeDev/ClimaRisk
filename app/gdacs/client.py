@@ -46,9 +46,19 @@ class GDACSClient:
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
-    def _get_json(self, path: str, params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        response = self._client.get(path, params=params)
+    def _get(self, url: str, params: Optional[dict[str, Any]] = None) -> httpx.Response:
+        """Shared retrying GET — used for both relative API paths and the absolute
+        per-feature `geometry_url` GDACS hands back, so a transient 429/5xx is retried
+        the same way regardless of which one a caller is fetching."""
+        response = self._client.get(url, params=params)
         response.raise_for_status()
+        return response
+
+    def _get_json(self, path: str, params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        response = self._get(path, params=params)
+        if response.status_code == 204:
+            log.info("Received 204 No Content from %s", path)
+            return {}
         payload = response.json()
         if not isinstance(payload, dict):
             raise ValueError(f"Expected JSON object from {path}, got {type(payload).__name__}")
@@ -73,8 +83,14 @@ class GDACSClient:
         page_number: int = 1,
         page_size: int = 100,
     ) -> list[dict[str, Any]]:
+        # NOTE: GDACS's SEARCH `country` filter expects a full country name
+        # (e.g. "South Africa"), not an ISO3 code, and silently returns 204
+        # No Content for any ISO3 value. We fetch globally instead and rely
+        # on event_affects_country() (ISO3-based, applied in process_features)
+        # to do the real filtering locally — the same logic already used for
+        # the realtime EVENTS4APP path. `country` is kept as an argument for
+        # logging only; it is intentionally NOT sent to GDACS.
         params = {
-            "country": country,
             "eventlist": event_list,
             "fromdate": from_date,
             "todate": to_date,
@@ -82,7 +98,7 @@ class GDACSClient:
             "pagesize": page_size,
         }
         log.info(
-            "Searching GDACS events country=%s page=%d from=%s to=%s",
+            "Searching GDACS events (global, filtering locally for %s) page=%d from=%s to=%s",
             country,
             page_number,
             from_date,
@@ -105,8 +121,10 @@ class GDACSClient:
     ) -> Optional[dict[str, Any]]:
         try:
             if geometry_url:
-                response = self._client.get(geometry_url)
-                response.raise_for_status()
+                response = self._get(geometry_url)
+                if response.status_code == 204:
+                    log.info("Received 204 No Content from %s", geometry_url)
+                    return None
                 payload = response.json()
             else:
                 payload = self._get_json(
@@ -130,8 +148,26 @@ class GDACSClient:
         features = payload.get("features") if isinstance(payload, dict) else None
         if not features:
             return None
-        geometry = features[0].get("geometry") if isinstance(features[0], dict) else None
-        return geometry if isinstance(geometry, dict) else None
+
+        # GDACS's geometry endpoint puts the bare event marker (a Point) in
+        # features[0] and the real area footprint (Polygon/MultiPolygon) in
+        # later features — for cyclones interleaved with forecast-track
+        # LineStrings too. Prefer the first real area footprint; fall back
+        # to whatever geometry is available (e.g. a lone Point) if no
+        # polygon/multipolygon feature exists at all.
+        polygon_types = {"Polygon", "MultiPolygon"}
+        fallback_geometry: Optional[dict[str, Any]] = None
+        for feature in features:
+            if not isinstance(feature, dict):
+                continue
+            geometry = feature.get("geometry")
+            if not isinstance(geometry, dict):
+                continue
+            if fallback_geometry is None:
+                fallback_geometry = geometry
+            if geometry.get("type") in polygon_types:
+                return geometry
+        return fallback_geometry
 
     def polite_delay(self) -> None:
         time.sleep(self.settings.gdacs_request_delay_seconds)

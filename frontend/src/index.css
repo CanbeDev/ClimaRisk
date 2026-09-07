@@ -1,0 +1,47 @@
+@import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background-color: #020617; /* slate-950 */
+}
+
+.leaflet-container {
+  background-color: #020617;
+  font-family: inherit;
+}
+
+.leaflet-popup-content-wrapper,
+.leaflet-tooltip {
+  background-color: #0f172a;
+  color: #e2e8f0;
+  border: 1px solid #1e293b;
+}
+
+.leaflet-tooltip {
+  box-shadow: none;
+}
+
+.leaflet-tooltip-top:before {
+  border-top-color: #1e293b;
+}
+
+/* Slim dark scrollbars for panels */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: #334155;
+  border-radius: 9999px;
+}
