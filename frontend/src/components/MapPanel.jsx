@@ -15,6 +15,28 @@ const SA_ZOOM = 5.4
 
 const LEGEND_SHAPE = { circle: 'rounded-full', square: 'rounded-[2px]', diamond: 'rounded-[2px] rotate-45' }
 
+// --- Footprint click priority ------------------------------------------------
+// Planar shoelace area (deg²) — used ONLY to rank footprints so the smallest
+// overlapping one paints LAST (on top of the SVG overlay pane) and therefore
+// wins the click. Not a real geographic area; a relative comparison within one
+// map is all this needs.
+function ringArea(ring) {
+  let a = 0
+  for (let i = 0, n = ring.length, j = n - 1; i < n; j = i++) {
+    a += (ring[j][0] + ring[i][0]) * (ring[j][1] - ring[i][1])
+  }
+  return Math.abs(a) / 2
+}
+function footprintArea(feature) {
+  const g = feature.geometry
+  if (!g) return 0
+  if (g.type === 'Polygon') return g.coordinates.reduce((s, r) => s + ringArea(r), 0)
+  if (g.type === 'MultiPolygon') {
+    return g.coordinates.reduce((s, poly) => s + poly.reduce((ss, r) => ss + ringArea(r), 0), 0)
+  }
+  return 0 // Point-only (centroid) events sort to the top — trivial to click.
+}
+
 // One divIcon per TIV tier — a surveyed-node glyph (grey by tier, orange ring)
 // for assets that fall inside the selected footprint.
 const assetIconCache = new Map()
@@ -72,26 +94,36 @@ export default function MapPanel({ hazards, assets, selectedHazardId, exposedAss
       const color = getHazardColor(type)
       const isSelected = id === selectedHazardId
       return {
-        // Outline stays the hazard-type hue (identity); the selected fill becomes
-        // an orange blueprint-style crosshatch (see the <defs> pattern below).
+        // Outline stays the hazard-type hue (identity). EVERY footprint carries
+        // the orange blueprint crosshatch so "these are hazard footprints" reads
+        // at rest; the selected one swaps to the dense pattern and breathes.
         color: color.stroke,
         weight: isSelected ? 2.5 : 1.75,
-        fillColor: isSelected ? 'url(#climrisk-hatch)' : color.fill,
-        fillOpacity: isSelected ? 1 : 0.14,
+        fillColor: isSelected ? 'url(#climrisk-hatch)' : 'url(#climrisk-hatch-rest)',
+        fillOpacity: 1,
         dashArray: has_footprint ? undefined : '4 4',
         // Leaflet's setStyle re-applies fill/stroke on re-selection but not
-        // className, so the "selected" treatment (crosshatch + breathe) keys off
-        // the pattern fill in CSS instead — see index.css.
+        // className, so the "selected" breathe keys off the exact dense-pattern
+        // fill (`url(#climrisk-hatch)`) in CSS instead — see index.css.
         className: `hazard-poly hazard-poly--${type}`,
       }
     },
     [selectedHazardId],
   )
 
+  // Largest footprint first, so the smallest paints LAST — on top in the SVG
+  // overlay pane. A click inside several overlapping footprints then selects the
+  // most specific one, not the big regional flood polygon that engulfs it.
+  const orderedFeatures = useMemo(() => {
+    const feats = hazards?.features ?? []
+    return [...feats].sort((a, b) => footprintArea(b) - footprintArea(a))
+  }, [hazards])
+
   return (
     <div className="relative h-full w-full">
-      {/* Pattern defs live in a zero-size SVG in the DOM; Leaflet's path
-          fill="url(#climrisk-hatch)" resolves against it document-wide. */}
+      {/* Pattern defs live in a zero-size SVG in the DOM; Leaflet paths resolve
+          fill="url(#…)" against it document-wide. `-rest` is the faint identity
+          every footprint carries; the dense one is the selected treatment. */}
       <svg aria-hidden="true" className="pointer-events-none absolute h-0 w-0 overflow-hidden">
         <defs>
           <pattern id="climrisk-hatch" width="9" height="9" patternUnits="userSpaceOnUse">
@@ -101,6 +133,16 @@ export default function MapPanel({ hazards, assets, selectedHazardId, exposedAss
               stroke="#ff6a2b"
               strokeWidth="0.85"
               strokeOpacity="0.5"
+              shapeRendering="crispEdges"
+            />
+          </pattern>
+          <pattern id="climrisk-hatch-rest" width="8" height="8" patternUnits="userSpaceOnUse">
+            <rect width="8" height="8" fill="#ff6a2b" fillOpacity="0.05" />
+            <path
+              d="M0,0 l8,8"
+              stroke="#ff6a2b"
+              strokeWidth="1"
+              strokeOpacity="0.4"
               shapeRendering="crispEdges"
             />
           </pattern>
@@ -117,7 +159,7 @@ export default function MapPanel({ hazards, assets, selectedHazardId, exposedAss
         />
         <ZoomControl position="bottomright" />
 
-        {hazards?.features.map((feature) => (
+        {orderedFeatures.map((feature) => (
           <GeoJSON
             key={feature.properties.hazard_event_id}
             data={feature}

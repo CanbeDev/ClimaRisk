@@ -191,10 +191,11 @@ body,
 .hazard-poly--VO { filter: drop-shadow(0 0 5px rgba(219, 39, 119, 0.45)); }
 .hazard-poly--WF { filter: drop-shadow(0 0 5px rgba(124, 45, 18, 0.5)); }
 .hazard-poly--DR { filter: drop-shadow(0 0 5px rgba(234, 179, 8, 0.5)); }
-/* The selected footprint is the only path with a pattern fill (the orange
-   crosshatch). Key the "breathe" off that rather than a class — Leaflet's
-   setStyle updates the fill attribute on re-selection but not className. */
-.leaflet-overlay-pane path[fill^="url("] {
+/* Every footprint carries a pattern fill now (faint `-rest` at rest, dense
+   `#climrisk-hatch` when selected). Breathe ONLY the selected one — match its
+   exact fill attribute rather than a class, because Leaflet's setStyle updates
+   the fill attribute on re-selection but not className. */
+.leaflet-overlay-pane path[fill="url(#climrisk-hatch)"] {
   animation: poly-breathe 2.6s ease-in-out infinite;
 }
 @keyframes poly-breathe {
@@ -234,7 +235,7 @@ body,
   .app-bg::before,
   .app-bg::after,
   .leaflet-overlay-pane path,
-  .hazard-poly--selected,
+  .leaflet-overlay-pane path[fill="url(#climrisk-hatch)"],
   .skeleton::after {
     animation: none !important;
   }
