@@ -239,6 +239,14 @@ export default function App() {
     return new Set(intersection.assets.map((asset) => asset.id))
   }, [intersection])
 
+  // Portfolio roll-up for the ExposurePanel masthead when nothing is selected —
+  // so the hero slot is never empty on load.
+  const portfolio = useMemo(() => {
+    if (!assets) return null
+    const tiv = assets.features.reduce((s, f) => s + (f.properties.total_insured_value || 0), 0)
+    return { assetCount: assets.features.length, tiv, eventCount: hazards?.features.length ?? 0 }
+  }, [assets, hazards])
+
   const { activeError, activeSpinning, handleRefresh } = useMemo(() => {
     if (view === 'trends') {
       return { activeError: trendsError, activeSpinning: trendsLoading, handleRefresh: loadTrends }
@@ -333,6 +341,7 @@ export default function App() {
               <ExposurePanel
                 selectedHazardMeta={selectedHazardMeta}
                 intersection={intersection}
+                portfolio={portfolio}
                 loading={loadingIntersection}
                 error={intersectionError}
                 onRetry={() => selectedHazardId != null && loadIntersection(selectedHazardId)}

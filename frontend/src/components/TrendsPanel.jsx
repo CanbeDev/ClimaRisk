@@ -40,21 +40,39 @@ const TOOLTIP_STYLE = {
 const HAZARD_CODES = Object.keys(HAZARD_COLORS)
 const ALERT_LEVELS = ['Red', 'Orange', 'Green']
 
+// Below this many events the year-count bar charts are mostly empty axes —
+// collapse each to a one-line stat instead.
+const COUNT_CHART_MIN = 10
+
 function yearOf(iso) {
   if (!iso) return null
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? null : d.getFullYear()
 }
 
-function ChartCard({ icon: Icon, title, subtitle, children }) {
+function ChartCard({ icon: Icon, title, subtitle, compact, children }) {
   return (
-    <div className="panel p-5">
+    <div className={compact ? 'panel p-4' : 'panel p-5'}>
       <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted">
         <Icon className="h-3.5 w-3.5" />
         {title}
       </div>
       {subtitle && <div className="mt-0.5 text-[11px] text-faint">{subtitle}</div>}
       <div className="mt-3">{children}</div>
+    </div>
+  )
+}
+
+// The honest fallback for a sparse count chart: the numbers, plainly stated.
+function CompactStat({ icon: Icon, title, primary, detail }) {
+  return (
+    <div className="panel flex items-start gap-3 p-4">
+      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-faint" />
+      <div className="min-w-0">
+        <div className="text-[10px] font-medium uppercase tracking-wider text-muted">{title}</div>
+        <div className="mt-0.5 text-sm text-ink">{primary}</div>
+        {detail && <div className="mt-0.5 text-[11px] text-faint">{detail}</div>}
+      </div>
     </div>
   )
 }
@@ -77,9 +95,23 @@ function FinancialTooltip({ active, payload, label }) {
 export default function TrendsPanel({ trends, loading, error, onRetry }) {
   const events = trends?.events ?? EMPTY
 
-  const { byYearType, byYearAlert, financial, years, hazardsPresent, alertsPresent, countMax } = useMemo(() => {
+  const {
+    byYearType,
+    byYearAlert,
+    financial,
+    years,
+    hazardsPresent,
+    alertsPresent,
+    countMax,
+    typeTotals,
+    alertTotals,
+  } = useMemo(() => {
     const yearMap = new Map()
+    const typeTotals = {}
+    const alertTotals = {}
     for (const ev of events) {
+      typeTotals[ev.event_type] = (typeTotals[ev.event_type] || 0) + 1
+      if (ev.alert_level) alertTotals[ev.alert_level] = (alertTotals[ev.alert_level] || 0) + 1
       const y = yearOf(ev.from_date)
       if (y == null) continue
       if (!yearMap.has(y)) yearMap.set(y, { year: y, _type: {}, _alert: {} })
@@ -89,12 +121,8 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
     }
     const sortedYears = [...yearMap.keys()].sort((a, b) => a - b)
 
-    const typesSeen = new Set()
-    const alertsSeen = new Set()
-    events.forEach((ev) => {
-      typesSeen.add(ev.event_type)
-      if (ev.alert_level) alertsSeen.add(ev.alert_level)
-    })
+    const typesSeen = new Set(Object.keys(typeTotals))
+    const alertsSeen = new Set(Object.keys(alertTotals))
     const hz = HAZARD_CODES.filter((c) => typesSeen.has(c))
     HAZARD_CODES.forEach((c) => typesSeen.delete(c))
     const hzList = [...hz, ...typesSeen] // known codes first, then any unrecognised
@@ -126,6 +154,8 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
       hazardsPresent: hzList,
       alertsPresent: alertList,
       countMax,
+      typeTotals,
+      alertTotals,
       byYearType,
       byYearAlert,
       financial: events
@@ -224,125 +254,122 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
         />
       </div>
 
-      <ChartCard
-        icon={Layers}
-        title="Hazard frequency by year"
-        subtitle="Event count per year, stacked by GDACS hazard type"
-      >
-        <ResponsiveContainer width="100%" height={240}>
-          <BarChart data={byYearType} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
-            <defs>
-              {hazardsPresent.map((code) => {
-                const c = (HAZARD_COLORS[code] || DEFAULT_HAZARD_COLOR).fill
-                return (
-                  <linearGradient key={code} id={`bar-hz-${code}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={c} stopOpacity={0.95} />
-                    <stop offset="100%" stopColor={c} stopOpacity={0.28} />
-                  </linearGradient>
-                )
-              })}
-            </defs>
-            <CartesianGrid stroke={GRID} vertical={false} />
-            <XAxis dataKey="year" stroke={AXIS} tick={TICK} />
-            <YAxis
-              stroke={AXIS}
-              tick={TICK}
-              allowDecimals={false}
-              domain={[0, countMax]}
-              tickCount={countMax + 1}
-            />
-            <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#00000008' }} />
-            <Legend wrapperStyle={{ fontSize: 11 }} />
-            {hazardsPresent.map((code) => (
-              <Bar
-                key={code}
-                dataKey={code}
-                stackId="hz"
-                maxBarSize={72}
-                name={(HAZARD_COLORS[code] || DEFAULT_HAZARD_COLOR).label}
-                fill={`url(#bar-hz-${code})`}
-              />
-            ))}
-          </BarChart>
-        </ResponsiveContainer>
-      </ChartCard>
-
-      <ChartCard
-        icon={AlertTriangle}
-        title="Alert level mix by year"
-        subtitle="GDACS Green / Orange / Red classification of each year's events"
-      >
-        {alertsPresent.length ? (
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={byYearAlert} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+      {/* ANCHOR — the trend this view exists to show */}
+      <div className="panel border-l-2 border-brand p-5">
+        <div className="flex items-center gap-1.5 text-brand">
+          <ShieldOff className="h-4 w-4" />
+          <h3 className="text-sm font-semibold text-ink">Insured exposure &amp; PML over time</h3>
+        </div>
+        <p className="mt-0.5 text-[11px] text-muted">
+          Per event, oldest to newest — TIV at risk (bar) against PML and the protection gap (lines).
+        </p>
+        <div className="mt-4">
+          <ResponsiveContainer width="100%" height={300}>
+            <ComposedChart data={financial} margin={{ top: 4, right: 8, bottom: 0, left: 4 }}>
               <defs>
-                {alertsPresent.map((level) => {
-                  const c = getAlertColor(level)
-                  return (
-                    <linearGradient key={level} id={`bar-al-${level}`} x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={c} stopOpacity={0.95} />
-                      <stop offset="100%" stopColor={c} stopOpacity={0.28} />
-                    </linearGradient>
-                  )
-                })}
+                <linearGradient id="bar-tiv" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={ACCENT.brand} stopOpacity={0.7} />
+                  <stop offset="100%" stopColor={ACCENT.brand} stopOpacity={0.14} />
+                </linearGradient>
               </defs>
               <CartesianGrid stroke={GRID} vertical={false} />
-              <XAxis dataKey="year" stroke={AXIS} tick={TICK} />
-              <YAxis
-                stroke={AXIS}
-                tick={TICK}
-                allowDecimals={false}
-                domain={[0, countMax]}
-                tickCount={countMax + 1}
-              />
-              <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#00000008' }} />
+              <XAxis dataKey="date" stroke={AXIS} tick={TICK} />
+              <YAxis stroke={AXIS} tick={TICK} tickFormatter={compactCurrency} width={64} />
+              <Tooltip content={<FinancialTooltip />} cursor={{ fill: '#00000008' }} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
-              {alertsPresent.map((level) => (
-                <Bar
-                  key={level}
-                  dataKey={level}
-                  stackId="al"
-                  maxBarSize={72}
-                  name={level}
-                  fill={`url(#bar-al-${level})`}
-                />
-              ))}
-            </BarChart>
+              <Bar dataKey="tiv" name="TIV at risk" fill="url(#bar-tiv)" maxBarSize={72} />
+              <Line dataKey="pml" name="PML" stroke={ACCENT.pml} strokeWidth={2} dot={{ r: 3 }} />
+              <Line dataKey="gap" name="Protection gap" stroke={ACCENT.gap} strokeWidth={2} dot={{ r: 3 }} strokeDasharray="4 3" />
+            </ComposedChart>
           </ResponsiveContainer>
-        ) : (
-          <div className="py-8 text-center text-xs text-faint">No alert levels recorded on these events.</div>
-        )}
-      </ChartCard>
-
-      <ChartCard
-        icon={ShieldOff}
-        title="Insured exposure & PML over time"
-        subtitle="Per event, oldest to newest — TIV at risk (bar) vs. PML and Protection Gap (lines)"
-      >
-        <ResponsiveContainer width="100%" height={260}>
-          <ComposedChart data={financial} margin={{ top: 4, right: 8, bottom: 0, left: 4 }}>
-            <defs>
-              <linearGradient id="bar-tiv" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={ACCENT.brand} stopOpacity={0.7} />
-                <stop offset="100%" stopColor={ACCENT.brand} stopOpacity={0.14} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid stroke={GRID} vertical={false} />
-            <XAxis dataKey="date" stroke={AXIS} tick={TICK} />
-            <YAxis stroke={AXIS} tick={TICK} tickFormatter={compactCurrency} width={64} />
-            <Tooltip content={<FinancialTooltip />} cursor={{ fill: '#00000008' }} />
-            <Legend wrapperStyle={{ fontSize: 11 }} />
-            <Bar dataKey="tiv" name="TIV at risk" fill="url(#bar-tiv)" maxBarSize={72} />
-            <Line dataKey="pml" name="PML" stroke={ACCENT.pml} strokeWidth={2} dot={{ r: 3 }} />
-            <Line dataKey="gap" name="Protection gap" stroke={ACCENT.gap} strokeWidth={2} dot={{ r: 3 }} strokeDasharray="4 3" />
-          </ComposedChart>
-        </ResponsiveContainer>
-        <div className="mt-2 text-[10px] leading-relaxed text-faint">
-          Events with no footprint or no intersecting assets show as zero exposure — they still count
-          toward frequency above. PML uses the documented HAZUS-MH/FEMA band midpoint per hazard type
-          and alert level, not a per-event vulnerability assessment.
         </div>
-      </ChartCard>
+        <div className="mt-2 text-[10px] leading-relaxed text-faint">
+          Events with no footprint or no intersecting assets show as zero exposure. PML uses the
+          documented HAZUS-MH/FEMA band midpoint per hazard type and alert level, not a per-event
+          vulnerability assessment.
+        </div>
+      </div>
+
+      {/* Count context — demoted below the anchor; a stat when the series is too sparse to chart */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        {events.length >= COUNT_CHART_MIN ? (
+          <ChartCard icon={Layers} title="Hazard frequency by year" compact>
+            <ResponsiveContainer width="100%" height={170}>
+              <BarChart data={byYearType} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+                <defs>
+                  {hazardsPresent.map((code) => {
+                    const c = (HAZARD_COLORS[code] || DEFAULT_HAZARD_COLOR).fill
+                    return (
+                      <linearGradient key={code} id={`bar-hz-${code}`} x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={c} stopOpacity={0.95} />
+                        <stop offset="100%" stopColor={c} stopOpacity={0.28} />
+                      </linearGradient>
+                    )
+                  })}
+                </defs>
+                <CartesianGrid stroke={GRID} vertical={false} />
+                <XAxis dataKey="year" stroke={AXIS} tick={TICK} />
+                <YAxis stroke={AXIS} tick={TICK} allowDecimals={false} domain={[0, countMax]} tickCount={countMax + 1} />
+                <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#00000008' }} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                {hazardsPresent.map((code) => (
+                  <Bar key={code} dataKey={code} stackId="hz" maxBarSize={56} name={(HAZARD_COLORS[code] || DEFAULT_HAZARD_COLOR).label} fill={`url(#bar-hz-${code})`} />
+                ))}
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        ) : (
+          <CompactStat
+            icon={Layers}
+            title="Hazard frequency"
+            primary={`${summary.total} ${summary.total === 1 ? 'event' : 'events'} · ${summary.span}`}
+            detail={hazardsPresent
+              .map((c) => `${typeTotals[c]} ${(HAZARD_COLORS[c] || DEFAULT_HAZARD_COLOR).label}`)
+              .join(' · ')}
+          />
+        )}
+
+        {events.length >= COUNT_CHART_MIN && alertsPresent.length ? (
+          <ChartCard icon={AlertTriangle} title="Alert level mix by year" compact>
+            <ResponsiveContainer width="100%" height={170}>
+              <BarChart data={byYearAlert} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+                <defs>
+                  {alertsPresent.map((level) => {
+                    const c = getAlertColor(level)
+                    return (
+                      <linearGradient key={level} id={`bar-al-${level}`} x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={c} stopOpacity={0.95} />
+                        <stop offset="100%" stopColor={c} stopOpacity={0.28} />
+                      </linearGradient>
+                    )
+                  })}
+                </defs>
+                <CartesianGrid stroke={GRID} vertical={false} />
+                <XAxis dataKey="year" stroke={AXIS} tick={TICK} />
+                <YAxis stroke={AXIS} tick={TICK} allowDecimals={false} domain={[0, countMax]} tickCount={countMax + 1} />
+                <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#00000008' }} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                {alertsPresent.map((level) => (
+                  <Bar key={level} dataKey={level} stackId="al" maxBarSize={56} name={level} fill={`url(#bar-al-${level})`} />
+                ))}
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        ) : (
+          <CompactStat
+            icon={AlertTriangle}
+            title="Alert level mix"
+            primary={`${summary.total} ${summary.total === 1 ? 'event' : 'events'}`}
+            detail={
+              alertsPresent.length === 0
+                ? 'no alert levels recorded'
+                : alertsPresent.length === 1
+                  ? `all ${alertsPresent[0]}`
+                  : alertsPresent.map((a) => `${alertTotals[a]} ${a}`).join(' · ')
+            }
+          />
+        )}
+      </div>
     </div>
   )
 }

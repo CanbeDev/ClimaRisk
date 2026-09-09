@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Building2, CalendarRange, ExternalLink, ShieldOff, TrendingDown } from 'lucide-react'
+import { AlertTriangle, CalendarRange, ExternalLink } from 'lucide-react'
 import { disclosureHtmlUrl } from '../api'
-import { currency, getAlert, getHazardColor, percent } from '../lib/theme'
+import { compactCurrency, currency, getAlert, getHazardColor, percent } from '../lib/theme'
 import MetricCard from './MetricCard'
 import { SkeletonCards, SkeletonRows } from './Skeleton'
 
@@ -51,11 +51,27 @@ export default function ReportPanel({ report, loading, error, onReload }) {
   const peak = hx.peak_event
   const coverRatio = pf.total_insured_value ? pf.declared_insured_value / pf.total_insured_value : null
 
+  const masthead = [
+    { label: 'Insured assets', value: String(pf.asset_count) },
+    { label: 'Portfolio TIV', value: compactCurrency(pf.total_insured_value) },
+    {
+      label: 'Declared cover',
+      value: coverRatio == null ? '—' : percent(coverRatio),
+      accent: coverRatio ? 'text-ink' : 'text-pml',
+    },
+    { label: 'Distinct assets exposed', value: String(hx.distinct_assets_exposed), accent: 'text-brand' },
+    {
+      label: 'Peak event PML',
+      value: peak ? compactCurrency(peak.probable_maximum_loss) : '—',
+      accent: 'text-pml',
+    },
+  ]
+
   return (
     <div className="mx-auto flex h-full max-w-5xl flex-col gap-5 overflow-y-auto p-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-ink">Climate risk disclosure</h2>
+          <h2 className="text-lg font-semibold leading-tight text-ink">Climate risk disclosure</h2>
           <p className="text-[11px] text-muted">
             {report.org_name} · hazard scope {report.iso3} · TCFD-style export
           </p>
@@ -95,7 +111,7 @@ export default function ReportPanel({ report, loading, error, onReload }) {
         · generated {new Date(report.generated_at).toLocaleString('en-ZA')}
       </p>
 
-      {/* Portfolio + exposure headline ---------------------------------- */}
+      {/* Headline + masthead band ------------------------------------------ */}
       <MetricCard
         icon={CalendarRange}
         label="Distinct TIV exposed in period"
@@ -103,89 +119,73 @@ export default function ReportPanel({ report, loading, error, onReload }) {
         format={currency}
         hero
       />
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <MetricCard
-          icon={Building2}
-          label="Insured assets"
-          amount={pf.asset_count}
-          format={(n) => Math.round(n).toString()}
-        />
-        <MetricCard icon={Building2} label="Portfolio TIV" amount={pf.total_insured_value} format={currency} />
-        <MetricCard
-          icon={ShieldOff}
-          label="Declared cover"
-          value={coverRatio == null ? '—' : percent(coverRatio)}
-          accent={coverRatio ? 'text-ink' : 'text-pml'}
-        />
-        <MetricCard
-          icon={CalendarRange}
-          label="Distinct assets exposed"
-          amount={hx.distinct_assets_exposed}
-          format={(n) => Math.round(n).toString()}
-          accent="text-brand"
-        />
-        <MetricCard
-          icon={TrendingDown}
-          label="Peak event PML"
-          accent="text-pml"
-          {...(peak ? { amount: peak.probable_maximum_loss, format: currency } : { value: '—' })}
-        />
+      <div className="panel flex flex-wrap divide-x divide-hair">
+        {masthead.map((m) => (
+          <div key={m.label} className="min-w-[8rem] flex-1 px-4 py-3">
+            <div className="text-[10px] font-medium uppercase tracking-wider text-muted">{m.label}</div>
+            <div className={`mt-0.5 text-sm font-semibold tabular-nums ${m.accent ?? 'text-ink'}`}>
+              {m.value}
+            </div>
+          </div>
+        ))}
       </div>
 
-      {/* Events table ------------------------------------------------------ */}
-      <div className="overflow-hidden panel">
-        <div className="border-b border-hair px-4 py-2.5 text-sm font-semibold text-ink">
-          Hazard events in period ({hx.event_count})
-        </div>
-        <div className="max-h-72 overflow-y-auto">
-          <table className="w-full text-xs">
-            <thead className="sticky top-0 bg-sunken text-[10px] uppercase tracking-wide text-muted">
+      {/* Events table — the document spine ------------------------------- */}
+      <div>
+        <h3 className="text-sm font-semibold text-ink">Hazard events in period ({hx.event_count})</h3>
+        <div className="mt-2 overflow-hidden panel">
+          <table className="w-full text-sm">
+            <thead className="bg-sunken text-[10px] uppercase tracking-wider text-muted">
               <tr>
-                <th className="px-4 py-2 text-left font-medium">Event</th>
-                <th className="px-2 py-2 text-left font-medium">Date</th>
-                <th className="px-2 py-2 text-left font-medium">Alert</th>
-                <th className="px-2 py-2 text-right font-medium">Assets</th>
-                <th className="px-2 py-2 text-right font-medium">TIV at risk</th>
-                <th className="px-2 py-2 text-right font-medium">PML</th>
-                <th className="px-4 py-2 text-right font-medium">Protection gap</th>
+                <th className="w-8 px-3 py-2.5 text-right font-medium">#</th>
+                <th className="px-3 py-2.5 text-left font-medium">Event</th>
+                <th className="px-2 py-2.5 text-left font-medium">Date</th>
+                <th className="px-2 py-2.5 text-left font-medium">Alert</th>
+                <th className="px-2 py-2.5 text-right font-medium">Assets</th>
+                <th className="px-2 py-2.5 text-right font-medium">TIV at risk</th>
+                <th className="px-2 py-2.5 text-right font-medium">PML</th>
+                <th className="px-3 py-2.5 text-right font-medium">Protection gap</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-hair">
-              {hx.events.map((e) => (
+              {hx.events.map((e, i) => (
                 <tr key={e.hazard_event_id} className="hover:bg-row">
-                  <td className="px-4 py-2 text-ink">
+                  <td className="px-3 py-3 text-right tabular-nums text-faint">{i + 1}</td>
+                  <td className="px-3 py-3 text-ink">
                     <span
                       className="mr-1.5 inline-block h-2 w-2 rounded-sm align-middle"
                       style={{ backgroundColor: getHazardColor(e.event_type).stroke }}
                     />
                     {e.event_name || `${e.event_type} ${e.event_id}`}
                   </td>
-                  <td className="px-2 py-2 text-muted">
+                  <td className="px-2 py-3 text-muted">
                     {e.from_date ? new Date(e.from_date).toLocaleDateString('en-ZA') : '—'}
                   </td>
-                  <td className={`px-2 py-2 ${getAlert(e.alert_level).text}`}>
-                    {e.alert_level || '—'}
+                  <td className={`px-2 py-3 ${getAlert(e.alert_level).text}`}>{e.alert_level || '—'}</td>
+                  <td className="px-2 py-3 text-right tabular-nums text-ink">{e.asset_count}</td>
+                  <td className="px-2 py-3 text-right tabular-nums text-ink">{currency(e.tiv_at_risk)}</td>
+                  <td className="px-2 py-3 text-right tabular-nums text-pml">
+                    {currency(e.probable_maximum_loss)}
                   </td>
-                  <td className="px-2 py-2 text-right tabular-nums text-ink">{e.asset_count}</td>
-                  <td className="px-2 py-2 text-right tabular-nums text-ink">{currency(e.tiv_at_risk)}</td>
-                  <td className="px-2 py-2 text-right tabular-nums text-pml">{currency(e.probable_maximum_loss)}</td>
-                  <td className="px-4 py-2 text-right tabular-nums text-gap">{currency(e.protection_gap)}</td>
+                  <td className="px-3 py-3 text-right tabular-nums text-gap">
+                    {currency(e.protection_gap)}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
-        <div className="border-t border-hair px-4 py-2 text-[10px] leading-relaxed text-faint">
-          Gross Σ across events (double-counts assets hit more than once): TIV at risk{' '}
-          {currency(hx.gross_tiv_at_risk)}, PML {currency(hx.gross_probable_maximum_loss)}. The
-          "distinct" cards above de-duplicate.
+          <div className="border-t border-hair px-3 py-2 text-[10px] leading-relaxed text-faint">
+            Gross Σ across events (double-counts assets hit more than once): TIV at risk{' '}
+            {currency(hx.gross_tiv_at_risk)}, PML {currency(hx.gross_probable_maximum_loss)}. The
+            masthead figures above de-duplicate.
+          </div>
         </div>
       </div>
 
-      {/* Parametric position -------------------------------------------- */}
-      <div className="panel p-5">
-        <div className="text-sm font-semibold text-ink">Parametric coverage position</div>
-        <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-xs sm:grid-cols-4">
+      {/* Parametric coverage position — subordinate sub-section ---------- */}
+      <div>
+        <h3 className="text-sm font-semibold text-ink">Parametric coverage position</h3>
+        <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-2 rounded-panel bg-sunken px-4 py-3 text-xs sm:grid-cols-4">
           <div className="flex justify-between">
             <span className="text-muted">Active rules</span>
             <span className="tabular-nums text-ink">

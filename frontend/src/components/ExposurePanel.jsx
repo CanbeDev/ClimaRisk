@@ -1,4 +1,4 @@
-import { AlertTriangle, Building2, DollarSign, MapPinOff, Radar, ShieldOff, TrendingDown, Zap } from 'lucide-react'
+import { AlertTriangle, DollarSign, MapPinOff, Radar } from 'lucide-react'
 import { currency, getAlert, getHazardColor, percent } from '../lib/theme'
 import AssetTable from './AssetTable'
 import BiCalculator from './BiCalculator'
@@ -16,20 +16,118 @@ function AlertBadge({ level }) {
   )
 }
 
-function EmptyState() {
+// The one domain-specific viz: TIV at risk is the whole bar; it splits into the
+// insured slice and the protection gap, with the modelled loss (PML) pinned
+// against it. Replaces what used to be two lookalike metric tiles.
+function CoverageBar({ intersection }) {
+  const tiv = intersection.total_insured_value || 0
+  const declared = intersection.total_declared_insured_value || 0
+  const gap = intersection.protection_gap || 0
+  const pml = intersection.probable_maximum_loss || 0
+  const asPct = (n) => (tiv > 0 ? Math.max(0, Math.min(100, (n / tiv) * 100)) : 0)
+  const declaredPct = asPct(declared)
+  const gapPct = Math.max(0, 100 - declaredPct)
+  const pmlPct = asPct(pml)
+
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-      <Radar className="h-10 w-10 text-faint" />
-      <div className="max-w-xs text-sm text-muted">
-        Select a hazard event on the map to view its underwriting exposure.
+    <div className="panel p-4">
+      <div className="text-[11px] font-medium uppercase tracking-wider text-muted">
+        Coverage vs. exposure at risk
+      </div>
+
+      <div className="relative mt-6 h-8">
+        <div
+          className="absolute -top-4 z-10 -translate-x-1/2 whitespace-nowrap text-[9px] font-semibold text-pml"
+          style={{ left: `${pmlPct}%` }}
+        >
+          PML
+        </div>
+        <div className="flex h-full overflow-hidden rounded bg-sunken">
+          {declaredPct > 0 && <div className="h-full bg-ok/80" style={{ width: `${declaredPct}%` }} />}
+          <div className="h-full bg-gap/70" style={{ width: `${gapPct}%` }} />
+        </div>
+        <div className="absolute inset-y-0 z-10" style={{ left: `${pmlPct}%` }}>
+          <div className="h-full w-0.5 -translate-x-1/2 bg-pml" />
+        </div>
+        <div className="absolute -bottom-4 right-0 text-[9px] uppercase tracking-wide text-faint">
+          = TIV at risk
+        </div>
+      </div>
+
+      <div className="mt-8 grid grid-cols-3 gap-2 text-[11px]">
+        <div>
+          <div className="flex items-center gap-1 text-muted">
+            <span className="h-2 w-2 rounded-sm bg-ok/80" />
+            Insured
+          </div>
+          <div className="mt-0.5 tabular-nums text-ink">{currency(declared)}</div>
+        </div>
+        <div>
+          <div className="flex items-center gap-1 text-muted">
+            <span className="h-2 w-2 rounded-sm bg-gap/70" />
+            Protection gap
+          </div>
+          <div className="mt-0.5 tabular-nums text-gap">
+            {currency(gap)}{' '}
+            <span className="text-faint">({percent(intersection.protection_gap_pct)})</span>
+          </div>
+        </div>
+        <div>
+          <div className="flex items-center gap-1 text-muted">
+            <span className="h-2.5 w-0.5 bg-pml" />
+            Modelled loss (PML)
+          </div>
+          <div className="mt-0.5 tabular-nums text-pml">
+            {currency(pml)} <span className="text-faint">({percent(intersection.damage_ratio)})</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 border-t border-hair pt-2 text-[10px] leading-relaxed text-faint">
+        The bar is TIV at risk. PML = TIV × a HAZUS-MH/FEMA band midpoint for this hazard type and
+        GDACS alert level — a documented approximation, not a per-event vulnerability assessment.
+        Protection gap treats any asset with no declared insured value as fully uninsured.
       </div>
     </div>
   )
 }
 
-export default function ExposurePanel({ selectedHazardMeta, intersection, loading, error, onRetry }) {
+function PortfolioMasthead({ portfolio }) {
+  return (
+    <div className="flex h-full flex-col gap-4 p-4">
+      {portfolio ? (
+        <>
+          <MetricCard icon={DollarSign} label="Portfolio TIV" amount={portfolio.tiv} format={currency} hero />
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-0.5 text-xs text-muted">
+            <span>
+              <b className="font-semibold tabular-nums text-ink">{portfolio.assetCount}</b> insured{' '}
+              {portfolio.assetCount === 1 ? 'asset' : 'assets'}
+            </span>
+            <span className="text-hair">·</span>
+            <span>
+              <b className="font-semibold tabular-nums text-ink">{portfolio.eventCount}</b> events in view
+            </span>
+          </div>
+        </>
+      ) : (
+        <>
+          <SkeletonCard hero />
+          <div className="skeleton h-3 w-40" />
+        </>
+      )}
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-panel border border-dashed border-hair px-6 text-center">
+        <Radar className="h-8 w-8 text-faint" />
+        <div className="max-w-xs text-sm text-muted">
+          Select a hazard event on the map to see the exposure and coverage it puts at risk.
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default function ExposurePanel({ selectedHazardMeta, intersection, portfolio, loading, error, onRetry }) {
   if (!selectedHazardMeta) {
-    return <EmptyState />
+    return <PortfolioMasthead portfolio={portfolio} />
   }
 
   const color = getHazardColor(selectedHazardMeta.event_type)
@@ -65,10 +163,7 @@ export default function ExposurePanel({ selectedHazardMeta, intersection, loadin
       {loading && (
         <>
           <SkeletonCard hero />
-          <div className="grid grid-cols-2 gap-3">
-            <SkeletonCard />
-            <SkeletonCard />
-          </div>
+          <div className="skeleton h-3 w-48" />
           <SkeletonRows rows={4} />
         </>
       )}
@@ -95,58 +190,32 @@ export default function ExposurePanel({ selectedHazardMeta, intersection, loadin
             format={currency}
             hero
           />
-          <div className="grid grid-cols-2 gap-3">
-            <MetricCard
-              icon={Building2}
-              label="Assets"
-              amount={intersection.asset_count}
-              format={(n) => Math.round(n).toString()}
-            />
-            <MetricCard
-              icon={Zap}
-              label="Daily net revenue"
-              amount={intersection.total_daily_net_revenue}
-              format={currency}
-              accent="text-over"
-            />
+
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-0.5 text-xs text-muted">
+            <span>
+              <b className="font-semibold tabular-nums text-ink">{intersection.asset_count}</b>{' '}
+              {intersection.asset_count === 1 ? 'asset' : 'assets'} exposed
+            </span>
+            <span className="text-hair">·</span>
+            <span>
+              Daily net revenue{' '}
+              <b className="font-semibold tabular-nums text-over">
+                {currency(intersection.total_daily_net_revenue)}
+              </b>
+            </span>
           </div>
 
-          {intersection.asset_count > 0 && (
-            <div className="space-y-1.5">
-              <div className="grid grid-cols-2 gap-3">
-                <MetricCard
-                  icon={TrendingDown}
-                  label={`PML (${percent(intersection.damage_ratio)} damage ratio)`}
-                  amount={intersection.probable_maximum_loss}
-                  format={currency}
-                  accent="text-pml"
-                />
-                <MetricCard
-                  icon={ShieldOff}
-                  label={`Protection gap (${percent(intersection.protection_gap_pct)})`}
-                  amount={intersection.protection_gap}
-                  format={currency}
-                  accent="text-gap"
-                />
-              </div>
-              <div className="text-[10px] leading-relaxed text-faint">
-                PML = TIV at risk × a HAZUS-MH/FEMA band midpoint for this hazard type and GDACS alert
-                level — a documented approximation, not a per-event vulnerability assessment. Protection
-                gap assumes an asset with no declared insured value is fully uninsured.
-              </div>
-            </div>
-          )}
-
-          {intersection.asset_count === 0 ? (
+          {intersection.asset_count > 0 ? (
+            <>
+              <CoverageBar intersection={intersection} />
+              <BiCalculator assets={intersection.assets} totalInsuredValue={intersection.total_insured_value} />
+              <AssetTable assets={intersection.assets} />
+            </>
+          ) : (
             <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-panel border border-dashed border-hair px-6 py-8 text-center">
               <MapPinOff className="h-6 w-6 text-faint" />
               <div className="text-sm text-muted">No insured assets fall within this event's footprint.</div>
             </div>
-          ) : (
-            <>
-              <BiCalculator assets={intersection.assets} totalInsuredValue={intersection.total_insured_value} />
-              <AssetTable assets={intersection.assets} />
-            </>
           )}
         </>
       )}
