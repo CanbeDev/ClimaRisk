@@ -1,17 +1,11 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangle, Building2, CalendarRange, ExternalLink, ShieldOff, TrendingDown } from 'lucide-react'
 import { disclosureHtmlUrl } from '../api'
-import { currency, getHazardColor, percent } from '../lib/theme'
+import { currency, getAlert, getHazardColor, percent } from '../lib/theme'
 import MetricCard from './MetricCard'
 import { SkeletonCards, SkeletonRows } from './Skeleton'
 
 const FIELD = 'rounded border border-hair bg-ground px-2 py-1 text-xs text-ink'
-
-const ALERT_STYLES = {
-  Red: 'text-pml',
-  Orange: 'text-over',
-  Green: 'text-ok',
-}
 
 export default function ReportPanel({ report, loading, error, onReload }) {
   const [from, setFrom] = useState('')
@@ -139,7 +133,7 @@ export default function ReportPanel({ report, loading, error, onReload }) {
       </div>
 
       {/* Events table ------------------------------------------------------ */}
-      <div className="overflow-hidden panel rounded-lg">
+      <div className="overflow-hidden panel">
         <div className="border-b border-hair px-4 py-2.5 text-sm font-semibold text-ink">
           Hazard events in period ({hx.event_count})
         </div>
@@ -169,7 +163,7 @@ export default function ReportPanel({ report, loading, error, onReload }) {
                   <td className="px-2 py-2 text-muted">
                     {e.from_date ? new Date(e.from_date).toLocaleDateString('en-ZA') : '—'}
                   </td>
-                  <td className={`px-2 py-2 ${ALERT_STYLES[e.alert_level] || 'text-muted'}`}>
+                  <td className={`px-2 py-2 ${getAlert(e.alert_level).text}`}>
                     {e.alert_level || '—'}
                   </td>
                   <td className="px-2 py-2 text-right tabular-nums text-ink">{e.asset_count}</td>
@@ -189,7 +183,7 @@ export default function ReportPanel({ report, loading, error, onReload }) {
       </div>
 
       {/* Parametric position -------------------------------------------- */}
-      <div className="panel rounded-[14px] p-5">
+      <div className="panel p-5">
         <div className="text-sm font-semibold text-ink">Parametric coverage position</div>
         <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-xs sm:grid-cols-4">
           <div className="flex justify-between">

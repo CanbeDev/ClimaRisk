@@ -12,34 +12,33 @@ import {
   YAxis,
 } from 'recharts'
 import { AlertTriangle, CalendarRange, Layers, ShieldOff, TrendingDown } from 'lucide-react'
-import { currency, DEFAULT_HAZARD_COLOR, getAlertColor, HAZARD_COLORS } from '../lib/theme'
+import {
+  ACCENT,
+  compactCurrency,
+  currency,
+  DEFAULT_HAZARD_COLOR,
+  getAlertColor,
+  HAZARD_COLORS,
+} from '../lib/theme'
 import MetricCard from './MetricCard'
 import { SkeletonCards, SkeletonChart } from './Skeleton'
 
 const EMPTY = []
 
-const AXIS = '#c9c1b5' // warm hairline
-const TICK = { fill: '#8c8278', fontSize: 11 } // warm grey
-const GRID = '#ece5db' // hair
+const AXIS = ACCENT.axis
+const TICK = { fill: ACCENT.faint, fontSize: 11 }
+const GRID = ACCENT.hair
 const TOOLTIP_STYLE = {
-  backgroundColor: '#ffffff',
-  border: '1px solid #e7e0d7',
+  backgroundColor: ACCENT.surface,
+  border: `1px solid ${ACCENT.hair}`,
   borderRadius: 10,
   boxShadow: '0 6px 20px -6px rgba(40,28,16,0.18)',
-  color: '#211d18',
+  color: ACCENT.ink,
   fontSize: 12,
 }
 
 const HAZARD_CODES = Object.keys(HAZARD_COLORS)
 const ALERT_LEVELS = ['Red', 'Orange', 'Green']
-
-function compactZAR(value) {
-  if (value == null) return '—'
-  const abs = Math.abs(value)
-  if (abs >= 1_000_000) return `R${(value / 1_000_000).toFixed(1)}M`
-  if (abs >= 1_000) return `R${(value / 1_000).toFixed(0)}k`
-  return `R${value.toFixed(0)}`
-}
 
 function yearOf(iso) {
   if (!iso) return null
@@ -49,7 +48,7 @@ function yearOf(iso) {
 
 function ChartCard({ icon: Icon, title, subtitle, children }) {
   return (
-    <div className="panel rounded-[14px] p-5">
+    <div className="panel p-5">
       <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted">
         <Icon className="h-3.5 w-3.5" />
         {title}
@@ -210,7 +209,7 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
         hero
         glow="#e0454a"
         {...(summary.peakPml
-          ? { amount: summary.peakPml.probable_maximum_loss, format: compactZAR }
+          ? { amount: summary.peakPml.probable_maximum_loss, format: compactCurrency }
           : { value: '—' })}
       />
       <div className="grid grid-cols-3 gap-3">
@@ -324,18 +323,18 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
           <ComposedChart data={financial} margin={{ top: 4, right: 8, bottom: 0, left: 4 }}>
             <defs>
               <linearGradient id="bar-tiv" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#ff6a2b" stopOpacity={0.7} />
-                <stop offset="100%" stopColor="#ff6a2b" stopOpacity={0.14} />
+                <stop offset="0%" stopColor={ACCENT.brand} stopOpacity={0.7} />
+                <stop offset="100%" stopColor={ACCENT.brand} stopOpacity={0.14} />
               </linearGradient>
             </defs>
             <CartesianGrid stroke={GRID} vertical={false} />
             <XAxis dataKey="date" stroke={AXIS} tick={TICK} />
-            <YAxis stroke={AXIS} tick={TICK} tickFormatter={compactZAR} width={64} />
+            <YAxis stroke={AXIS} tick={TICK} tickFormatter={compactCurrency} width={64} />
             <Tooltip content={<FinancialTooltip />} cursor={{ fill: '#00000008' }} />
             <Legend wrapperStyle={{ fontSize: 11 }} />
             <Bar dataKey="tiv" name="TIV at risk" fill="url(#bar-tiv)" maxBarSize={72} />
-            <Line dataKey="pml" name="PML" stroke="#e0454a" strokeWidth={2} dot={{ r: 3 }} />
-            <Line dataKey="gap" name="Protection gap" stroke="#9a6b1e" strokeWidth={2} dot={{ r: 3 }} strokeDasharray="4 3" />
+            <Line dataKey="pml" name="PML" stroke={ACCENT.pml} strokeWidth={2} dot={{ r: 3 }} />
+            <Line dataKey="gap" name="Protection gap" stroke={ACCENT.gap} strokeWidth={2} dot={{ r: 3 }} strokeDasharray="4 3" />
           </ComposedChart>
         </ResponsiveContainer>
         <div className="mt-2 text-[10px] leading-relaxed text-faint">

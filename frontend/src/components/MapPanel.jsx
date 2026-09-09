@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import L from 'leaflet'
 import { CircleMarker, GeoJSON, MapContainer, Marker, TileLayer, Tooltip, ZoomControl } from 'react-leaflet'
 import {
+  ACCENT,
   ASSET_TIV_LEGEND,
   currency,
   getAssetColor,
@@ -55,7 +56,7 @@ function assetIcon(tier) {
 
 function MapLegend() {
   return (
-    <div className="panel absolute bottom-4 left-4 z-[1000] flex flex-col gap-2 rounded-[14px] p-3.5 text-[11px] text-ink backdrop-blur">
+    <div className="panel absolute bottom-4 left-4 z-[1000] flex flex-col gap-2 p-3.5 text-[11px] text-ink backdrop-blur">
       <div>
         <div className="mb-1.5 font-semibold text-muted uppercase tracking-wider text-[10px]">Hazard type</div>
         <div className="grid grid-cols-2 gap-x-3 gap-y-1">
@@ -127,20 +128,20 @@ export default function MapPanel({ hazards, assets, selectedHazardId, exposedAss
       <svg aria-hidden="true" className="pointer-events-none absolute h-0 w-0 overflow-hidden">
         <defs>
           <pattern id="climrisk-hatch" width="9" height="9" patternUnits="userSpaceOnUse">
-            <rect width="9" height="9" fill="#ff6a2b" fillOpacity="0.06" />
+            <rect width="9" height="9" fill={ACCENT.brand} fillOpacity="0.06" />
             <path
               d="M0,0 l9,9 M9,0 l-9,9"
-              stroke="#ff6a2b"
+              stroke={ACCENT.brand}
               strokeWidth="0.85"
               strokeOpacity="0.5"
               shapeRendering="crispEdges"
             />
           </pattern>
           <pattern id="climrisk-hatch-rest" width="8" height="8" patternUnits="userSpaceOnUse">
-            <rect width="8" height="8" fill="#ff6a2b" fillOpacity="0.05" />
+            <rect width="8" height="8" fill={ACCENT.brand} fillOpacity="0.05" />
             <path
               d="M0,0 l8,8"
-              stroke="#ff6a2b"
+              stroke={ACCENT.brand}
               strokeWidth="1"
               strokeOpacity="0.4"
               shapeRendering="crispEdges"
@@ -199,11 +200,10 @@ export default function MapPanel({ hazards, assets, selectedHazardId, exposedAss
               center={[lat, lng]}
               radius={4.5}
               pathOptions={{
-                color: '#ffffff',
+                color: ACCENT.surface,
                 weight: 1.25,
                 fillColor: getAssetColor(total_insured_value),
                 fillOpacity: 0.9,
-                className: 'asset-dot',
               }}
             >
               {tooltip}

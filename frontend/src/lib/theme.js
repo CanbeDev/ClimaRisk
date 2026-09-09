@@ -1,8 +1,11 @@
-// Semantic accent tokens — mirror the CSS custom properties in index.css so JS
-// (recharts, Leaflet path options, inline styles) can reference the same values.
-// Orange is the primary brand; the rest are re-mapped so nothing clashes with it.
+// ── Single source of truth for colour ──────────────────────────────────────
+// ACCENT mirrors the @theme custom properties in index.css so JS consumers that
+// can't read CSS variables — recharts, Leaflet path options, inline styles —
+// resolve the exact same values. Keep in sync with @theme.
 export const ACCENT = {
   brand: '#ff6a2b', // exposure / TIV — primary
+  brandink: '#e2571c', // brand hover / pressed
+  brandsoft: '#ffefe6', // tinted brand background
   pml: '#e0454a', // loss / PML / basis-risk underpay
   gap: '#9a6b1e', // protection gap — muted gold, distinct from brand
   over: '#cd7a12', // basis-risk overpay — amber
@@ -11,7 +14,9 @@ export const ACCENT = {
   muted: '#6b6258',
   faint: '#8c8278',
   hair: '#e7e0d7',
+  sunken: '#efeae3',
   surface: '#ffffff',
+  axis: '#c9c1b5', // chart-only warm hairline — a touch darker than hair
 }
 
 // GDACS event_type -> color. A categorical set spread across the wheel and
@@ -33,16 +38,23 @@ export function getHazardColor(eventType) {
   return HAZARD_COLORS[eventType] || DEFAULT_HAZARD_COLOR
 }
 
-// GDACS alert level -> color (traffic-light scale), tuned for a light background.
-export const ALERT_COLORS = {
-  Red: '#dc2626',
-  Orange: '#d97706',
-  Green: '#16a34a',
+// GDACS alert level -> the app's semantic tokens. ONE source of truth: the alert
+// badge (ExposurePanel), the report's alert cell, and the Trends alert-mix chart
+// all read from here, so a level is the same colour everywhere it appears.
+export const ALERT_TOKENS = {
+  Red: { hex: ACCENT.pml, text: 'text-pml', chip: 'border-pml/30 bg-pml/10 text-pml' },
+  Orange: { hex: ACCENT.over, text: 'text-over', chip: 'border-over/30 bg-over/10 text-over' },
+  Green: { hex: ACCENT.ok, text: 'text-ok', chip: 'border-ok/30 bg-ok/10 text-ok' },
 }
-export const DEFAULT_ALERT_COLOR = '#78716c'
+export const DEFAULT_ALERT = { hex: ACCENT.faint, text: 'text-muted', chip: 'border-hair bg-sunken text-muted' }
 
+export function getAlert(level) {
+  return ALERT_TOKENS[level] || DEFAULT_ALERT
+}
+
+// Hex-only shim for chart callers (recharts fill/stroke).
 export function getAlertColor(level) {
-  return ALERT_COLORS[level] || DEFAULT_ALERT_COLOR
+  return getAlert(level).hex
 }
 
 // Asset marker by Total Insured Value tier. A warm-grey → near-black ramp
@@ -76,6 +88,16 @@ export const currency = (value) => {
     currency: 'ZAR',
     maximumFractionDigits: 0,
   })
+}
+
+// Short ZAR for axes, chips, dense tables. `R1.5M` / `-R820k` / `R430`.
+export const compactCurrency = (value) => {
+  if (value == null) return '—'
+  const abs = Math.abs(value)
+  const sign = value < 0 ? '-' : ''
+  if (abs >= 1_000_000) return `${sign}R${(abs / 1_000_000).toFixed(1)}M`
+  if (abs >= 1_000) return `${sign}R${(abs / 1_000).toFixed(0)}k`
+  return `${sign}R${abs.toFixed(0)}`
 }
 
 export const percent = (value) => {

@@ -1,23 +1,15 @@
 import { AlertTriangle, Building2, DollarSign, MapPinOff, Radar, ShieldOff, TrendingDown, Zap } from 'lucide-react'
-import { currency, getHazardColor, percent } from '../lib/theme'
+import { currency, getAlert, getHazardColor, percent } from '../lib/theme'
 import AssetTable from './AssetTable'
 import BiCalculator from './BiCalculator'
 import MetricCard from './MetricCard'
 import { SkeletonCard, SkeletonRows } from './Skeleton'
 
-const ALERT_STYLES = {
-  Red: 'border-pml/30 bg-pml/10 text-pml',
-  Orange: 'border-over/30 bg-over/10 text-over',
-  Green: 'border-ok/30 bg-ok/10 text-ok',
-}
-
 function AlertBadge({ level }) {
   if (!level) return null
   return (
     <span
-      className={`rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-        ALERT_STYLES[level] || 'border-hair bg-sunken text-muted'
-      }`}
+      className={`rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${getAlert(level).chip}`}
     >
       {level} alert
     </span>
@@ -44,7 +36,7 @@ export default function ExposurePanel({ selectedHazardMeta, intersection, loadin
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
-      <div className="panel rounded-lg p-4">
+      <div className="panel p-4">
         <div className="flex items-center gap-2">
           <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color.stroke }} />
           <span className="text-xs font-semibold uppercase tracking-wide text-muted">{color.label}</span>
@@ -146,7 +138,7 @@ export default function ExposurePanel({ selectedHazardMeta, intersection, loadin
           )}
 
           {intersection.asset_count === 0 ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-hair px-6 py-8 text-center">
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-panel border border-dashed border-hair px-6 py-8 text-center">
               <MapPinOff className="h-6 w-6 text-faint" />
               <div className="text-sm text-muted">No insured assets fall within this event's footprint.</div>
             </div>

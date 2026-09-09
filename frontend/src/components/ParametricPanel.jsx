@@ -1,14 +1,5 @@
 import { useMemo, useState } from 'react'
-import {
-  AlertTriangle,
-  KeyRound,
-  Loader2,
-  Play,
-  Plus,
-  ShieldCheck,
-  Trash2,
-  Zap,
-} from 'lucide-react'
+import { AlertTriangle, KeyRound, Loader2, Play, Plus, ShieldAlert, Trash2 } from 'lucide-react'
 import {
   createTrigger,
   deleteTrigger,
@@ -17,9 +8,9 @@ import {
   setOperatorKey,
   updateTrigger,
 } from '../api'
-import { currency, getHazardColor, percent } from '../lib/theme'
+import { ACCENT, compactCurrency, currency, getHazardColor, percent } from '../lib/theme'
 import MetricCard from './MetricCard'
-import { SkeletonCards, SkeletonRows } from './Skeleton'
+import { SkeletonCard, SkeletonRows } from './Skeleton'
 
 const HAZARD_CODES = ['EQ', 'TC', 'FL', 'VO', 'WF', 'DR']
 const ALERT_LEVELS = ['Green', 'Orange', 'Red']
@@ -28,6 +19,27 @@ const PAYOUT_KINDS = [
   { value: 'per_asset', label: 'Per exposed asset' },
   { value: 'tiv_share', label: 'Share of exposed TIV' },
 ]
+
+// ── Ledger bar scale ───────────────────────────────────────────────────────
+// Swappable: 'linear' keeps magnitude honest (a +1063% firing draws ~1.8× a
+// +576% one); 'compressed' log-scales so both read as loudly wrong without the
+// larger dwarfing the smaller. The header toggle overrides this default.
+const LEDGER_SCALE_DEFAULT = 'linear'
+
+// Returns { widthPct: 0–50 (share of the half-track), over: bool } for one firing.
+function barGeometry(firing, domainMax, mode) {
+  const br = firing.basis_risk ?? 0
+  const over = br > 0
+  if (br === 0) return { widthPct: 0, over }
+  const pct = firing.basis_risk_pct
+  // Undefined ratio (a real payout against zero modelled loss) = unbounded
+  // overpay — pin it to the full half-track.
+  if (pct == null) return { widthPct: 50, over }
+  const mag = Math.abs(pct)
+  const dm = Math.max(domainMax, 1e-6)
+  const frac = mode === 'compressed' ? Math.log1p(mag) / Math.log1p(dm) : mag / dm
+  return { widthPct: Math.max(Math.min(frac, 1) * 50, 3), over }
+}
 
 function conditionSummary(t) {
   const parts = []
@@ -54,6 +66,16 @@ function basisRiskClass(value) {
 
 const FIELD = 'rounded border border-hair bg-ground px-2 py-1 text-xs text-ink'
 const EMPTY = []
+
+const STARTER_RULE = {
+  name: 'Flood · Orange · exposed',
+  event_type: 'FL',
+  min_alert_level: 'Orange',
+  min_severity_value: null,
+  requires_exposed_assets: true,
+  payout_kind: 'fixed',
+  payout_value: 10_000_000,
+}
 
 function OperatorKeyStrip({ onChange }) {
   const [open, setOpen] = useState(false)
@@ -232,11 +254,49 @@ function RuleForm({ onCreated, onError, onCancel }) {
   )
 }
 
+// Designed empty state — a real prompt, not a fallback line of grey text.
+function StarterRulePrompt({ onCreateStarter, onCustom, creating }) {
+  return (
+    <div className="flex flex-col items-center gap-3 px-6 py-10 text-center">
+      <div className="flex h-11 w-11 items-center justify-center rounded-full bg-brandsoft text-brand">
+        <ShieldAlert className="h-5 w-5" />
+      </div>
+      <div>
+        <div className="text-sm font-semibold text-ink">No parametric rules yet</div>
+        <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-muted">
+          Index-based cover pays a fixed amount the moment a measurable condition on a hazard
+          event is met — no loss adjustment. Start with a common one:
+        </p>
+      </div>
+      <div className="w-full max-w-sm rounded-lg border border-hair bg-sunken px-4 py-3 text-left">
+        <div className="text-xs font-medium text-ink">Flood · alert ≥ Orange · hits an insured asset</div>
+        <div className="mt-0.5 text-[11px] text-muted">→ pays R 10,000,000 flat</div>
+        <button
+          onClick={onCreateStarter}
+          disabled={creating}
+          className="mt-2.5 flex items-center gap-1.5 rounded bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brandink disabled:opacity-50"
+        >
+          {creating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+          Create this rule
+        </button>
+      </div>
+      <button
+        onClick={onCustom}
+        className="text-xs text-muted underline-offset-2 hover:text-ink hover:underline"
+      >
+        or build a custom rule
+      </button>
+    </div>
+  )
+}
+
 export default function ParametricPanel({ summary, triggers, firings, loading, error, onChanged }) {
   const [actionError, setActionError] = useState(null)
   const [evaluating, setEvaluating] = useState(false)
   const [busyId, setBusyId] = useState(null)
   const [showRuleForm, setShowRuleForm] = useState(false)
+  const [creatingStarter, setCreatingStarter] = useState(false)
+  const [scale, setScale] = useState(LEDGER_SCALE_DEFAULT)
 
   const rules = triggers ?? EMPTY
   const ledger = firings ?? EMPTY
@@ -247,6 +307,10 @@ export default function ParametricPanel({ summary, triggers, firings, loading, e
   const sortedLedger = useMemo(
     () => [...ledger].sort((a, b) => Math.abs(b.basis_risk) - Math.abs(a.basis_risk)),
     [ledger],
+  )
+  const domainMax = useMemo(
+    () => Math.max(0, ...sortedLedger.map((f) => Math.abs(f.basis_risk_pct ?? 0))),
+    [sortedLedger],
   )
 
   const runEvaluateAll = async () => {
@@ -288,11 +352,24 @@ export default function ParametricPanel({ summary, triggers, firings, loading, e
     }
   }
 
+  const createStarterRule = async () => {
+    setCreatingStarter(true)
+    setActionError(null)
+    try {
+      await createTrigger(STARTER_RULE)
+      onChanged()
+    } catch (err) {
+      setActionError(err)
+    } finally {
+      setCreatingStarter(false)
+    }
+  }
+
   if (loading && !summary) {
     return (
       <div className="mx-auto flex h-full max-w-5xl flex-col gap-5 p-6">
-        <SkeletonCards count={4} hero />
-        <SkeletonRows rows={3} />
+        <SkeletonCard hero />
+        <SkeletonRows rows={2} />
         <SkeletonRows rows={4} />
       </div>
     )
@@ -352,33 +429,33 @@ export default function ParametricPanel({ summary, triggers, firings, loading, e
         amount={totalBasis}
         format={currency}
         hero
-        glow={totalBasis > 0 ? '#cd7a12' : totalBasis < 0 ? '#e0454a' : '#ff6a2b'}
+        glow={totalBasis > 0 ? ACCENT.over : totalBasis < 0 ? ACCENT.pml : ACCENT.brand}
       />
-      <div className="grid grid-cols-3 gap-3">
-        <MetricCard
-          icon={ShieldCheck}
-          label="Active rules"
-          value={`${summary?.active_rule_count ?? 0} / ${summary?.rule_count ?? 0}`}
-        />
-        <MetricCard
-          icon={Zap}
-          label="Outstanding payout"
-          amount={totalPayout}
-          format={currency}
-          accent="text-brand"
-        />
-        <MetricCard
-          icon={Play}
-          label="Firings"
-          amount={summary?.firing_count ?? 0}
-          format={(n) => Math.round(n).toString()}
-        />
+
+      {/* supporting stats — thin strip, secondary to the ledger below */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1 px-0.5 text-xs text-muted">
+        <span>
+          Active rules{' '}
+          <b className="font-semibold tabular-nums text-ink">
+            {summary?.active_rule_count ?? 0}/{summary?.rule_count ?? 0}
+          </b>
+        </span>
+        <span className="text-hair">·</span>
+        <span>
+          Outstanding payout <b className="font-semibold tabular-nums text-brand">{currency(totalPayout)}</b>
+        </span>
+        <span className="text-hair">·</span>
+        <span>
+          Firings <b className="font-semibold tabular-nums text-ink">{summary?.firing_count ?? 0}</b>
+        </span>
       </div>
 
-      {/* Rules ------------------------------------------------------------- */}
-      <div className="overflow-hidden panel rounded-lg">
+      {/* ── Rules — compact strip ─────────────────────────────────────────── */}
+      <div className="panel overflow-hidden">
         <div className="flex items-center justify-between border-b border-hair px-4 py-2.5">
-          <span className="text-sm font-semibold text-ink">Rules ({rules.length})</span>
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted">
+            Rules ({rules.length})
+          </span>
           <button
             onClick={() => {
               setShowRuleForm((v) => !v)
@@ -402,109 +479,170 @@ export default function ParametricPanel({ summary, triggers, firings, loading, e
             />
           </div>
         )}
-        {rules.length === 0 ? (
-          <div className="px-4 py-8 text-center text-xs text-faint">
-            No trigger rules yet. Create one to start evaluating events.
-          </div>
+        {rules.length === 0 && !showRuleForm ? (
+          <StarterRulePrompt
+            onCreateStarter={createStarterRule}
+            onCustom={() => setShowRuleForm(true)}
+            creating={creatingStarter}
+          />
         ) : (
-          <div className="max-h-72 overflow-y-auto">
-            <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-sunken text-[10px] uppercase tracking-wide text-muted">
-                <tr>
-                  <th className="px-4 py-2 text-left font-medium">Rule</th>
-                  <th className="px-2 py-2 text-left font-medium">Conditions</th>
-                  <th className="px-2 py-2 text-right font-medium">Payout</th>
-                  <th className="px-2 py-2 text-center font-medium">Active</th>
-                  <th className="px-4 py-2 text-right font-medium" />
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-hair">
-                {rules.map((rule) => (
-                  <tr key={rule.id} className="hover:bg-row">
-                    <td className="px-4 py-2 text-ink">{rule.name}</td>
-                    <td className="px-2 py-2 text-muted">{conditionSummary(rule)}</td>
-                    <td className="px-2 py-2 text-right tabular-nums text-ink">{payoutSummary(rule)}</td>
-                    <td className="px-2 py-2 text-center">
-                      <button
-                        onClick={() => toggleActive(rule)}
-                        disabled={busyId === rule.id}
-                        className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
-                          rule.is_active
-                            ? 'bg-ok/10 text-ok'
-                            : 'bg-sunken text-muted'
-                        } disabled:opacity-50`}
-                      >
-                        {rule.is_active ? 'On' : 'Off'}
-                      </button>
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      <button
-                        onClick={() => removeRule(rule)}
-                        disabled={busyId === rule.id}
-                        className="text-faint hover:text-pml disabled:opacity-50"
-                        aria-label={`Delete rule ${rule.name}`}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          rules.length > 0 && (
+            <div className="flex flex-wrap gap-2 p-3">
+              {rules.map((rule) => (
+                <div
+                  key={rule.id}
+                  className="flex min-w-[230px] flex-1 flex-col gap-1.5 rounded-lg border border-hair bg-sunken/60 p-3"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-xs font-medium text-ink">{rule.name}</span>
+                    <button
+                      onClick={() => removeRule(rule)}
+                      disabled={busyId === rule.id}
+                      className="shrink-0 text-faint hover:text-pml disabled:opacity-50"
+                      aria-label={`Delete rule ${rule.name}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <div className="text-[10px] leading-relaxed text-faint">{conditionSummary(rule)}</div>
+                  <div className="mt-0.5 flex items-center justify-between">
+                    <span className="text-[11px] tabular-nums text-ink">{payoutSummary(rule)}</span>
+                    <button
+                      onClick={() => toggleActive(rule)}
+                      disabled={busyId === rule.id}
+                      className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                        rule.is_active ? 'bg-ok/10 text-ok' : 'bg-surface text-muted'
+                      } disabled:opacity-50`}
+                    >
+                      {rule.is_active ? 'On' : 'Off'}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
         )}
       </div>
 
-      {/* Payout ledger --------------------------------------------------- */}
-      <div className="overflow-hidden panel rounded-lg">
-        <div className="border-b border-hair px-4 py-2.5 text-sm font-semibold text-ink">
-          Payout ledger ({ledger.length})
+      {/* ── Payout ledger — the anchor ───────────────────────────────────── */}
+      <div className="panel overflow-hidden">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hair px-4 py-3">
+          <div>
+            <div className="text-sm font-semibold text-ink">Payout ledger</div>
+            <div className="text-[11px] text-muted">
+              {ledger.length} outstanding {ledger.length === 1 ? 'firing' : 'firings'} ·{' '}
+              {currency(totalPayout)} committed
+            </div>
+          </div>
+          {ledger.length > 0 && (
+            <div className="flex items-center gap-1 rounded bg-sunken p-0.5 text-[10px] font-medium">
+              {[
+                ['linear', 'Linear'],
+                ['compressed', 'Log'],
+              ].map(([m, lbl]) => (
+                <button
+                  key={m}
+                  onClick={() => setScale(m)}
+                  className={`rounded px-2 py-0.5 ${
+                    scale === m ? 'bg-surface text-brand shadow-sm' : 'text-muted hover:text-ink'
+                  }`}
+                >
+                  {lbl}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
+
         {ledger.length === 0 ? (
-          <div className="px-4 py-8 text-center text-xs text-faint">
-            No rules currently fire against any stored event.
+          <div className="flex flex-col items-center gap-2 px-6 py-10 text-center">
+            <Play className="h-6 w-6 text-faint" />
+            <div className="text-xs font-medium text-ink">No rules fire against any stored event</div>
+            <p className="max-w-xs text-[11px] text-muted">
+              {rules.length} rule{rules.length === 1 ? '' : 's'} defined. Run an evaluation to test
+              them against every ingested event.
+            </p>
+            <button
+              onClick={runEvaluateAll}
+              disabled={evaluating}
+              className="mt-1 flex items-center gap-1.5 rounded bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brandink disabled:opacity-50"
+            >
+              {evaluating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+              Re-evaluate all events
+            </button>
           </div>
         ) : (
-          <div className="max-h-80 overflow-y-auto">
-            <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-sunken text-[10px] uppercase tracking-wide text-muted">
-                <tr>
-                  <th className="px-4 py-2 text-left font-medium">Event</th>
-                  <th className="px-2 py-2 text-left font-medium">Rule</th>
-                  <th className="px-2 py-2 text-right font-medium">Payout</th>
-                  <th className="px-2 py-2 text-right font-medium">Modelled loss</th>
-                  <th className="px-4 py-2 text-right font-medium">Basis risk</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-hair">
-                {sortedLedger.map((f) => (
-                  <tr key={f.id} className="hover:bg-row">
-                    <td className="px-4 py-2 text-ink">
-                      {f.event_name || `${f.event_type} ${f.event_id}`}
-                      <span className="ml-1 text-faint">#{f.hazard_event_id}</span>
-                    </td>
-                    <td className="px-2 py-2 text-muted">{f.trigger_name}</td>
-                    <td className="px-2 py-2 text-right tabular-nums text-brand">{currency(f.payout_amount)}</td>
-                    <td className="px-2 py-2 text-right tabular-nums text-muted">{currency(f.modelled_loss)}</td>
-                    <td className={`px-4 py-2 text-right tabular-nums ${basisRiskClass(f.basis_risk)}`}>
-                      {currency(f.basis_risk)}
-                      {f.basis_risk_pct != null && (
-                        <span className="ml-1 text-[10px] text-faint">
-                          ({f.basis_risk_pct > 0 ? '+' : ''}
-                          {percent(f.basis_risk_pct)})
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <div className="flex items-center justify-between px-4 pb-1.5 pt-2.5 text-[10px] text-faint">
+              <span className="flex items-center gap-1.5">
+                <span className="h-2 w-3 rounded-sm bg-pml/70" />
+                underpays — shortfall risk
+              </span>
+              <span className="font-medium text-muted">modelled loss</span>
+              <span className="flex items-center gap-1.5">
+                overpays — premium inefficiency
+                <span className="h-2 w-3 rounded-sm bg-over/70" />
+              </span>
+            </div>
+            <div className="max-h-[22rem] overflow-y-auto">
+              {sortedLedger.map((f) => {
+                const g = barGeometry(f, domainMax, scale)
+                const tone = basisRiskClass(f.basis_risk)
+                return (
+                  <div
+                    key={f.id}
+                    className="grid grid-cols-[minmax(0,8.5rem)_1fr_5.75rem] items-center gap-3 border-t border-hair px-4 py-2.5 first:border-t-0 hover:bg-row"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-medium text-ink">
+                        {f.event_name || `${f.event_type} ${f.event_id}`}
+                        <span className="ml-1 font-normal text-faint">#{f.hazard_event_id}</span>
+                      </div>
+                      <div className="truncate text-[10px] text-muted">{f.trigger_name}</div>
+                    </div>
+
+                    <div className="min-w-0">
+                      <div className="relative h-4 overflow-hidden rounded bg-sunken">
+                        <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-hair" />
+                        <div
+                          className={`absolute inset-y-[3px] transition-[width] duration-500 ${
+                            g.over ? 'left-1/2 rounded-r bg-over' : 'right-1/2 rounded-l bg-pml'
+                          }`}
+                          style={{ width: `${g.widthPct}%` }}
+                        />
+                      </div>
+                      <div className="mt-1 flex justify-between text-[10px] text-faint">
+                        <span>payout {compactCurrency(f.payout_amount)}</span>
+                        <span>modelled loss {compactCurrency(f.modelled_loss)}</span>
+                      </div>
+                    </div>
+
+                    <div className="text-right">
+                      <div className={`text-xs font-semibold tabular-nums ${tone}`}>
+                        {f.basis_risk > 0 ? '+' : ''}
+                        {compactCurrency(f.basis_risk)}
+                      </div>
+                      <div className="text-[10px] tabular-nums text-faint">
+                        {f.basis_risk_pct != null
+                          ? `${f.basis_risk_pct > 0 ? '+' : ''}${percent(f.basis_risk_pct)}`
+                          : 'no modelled loss'}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </>
         )}
-        <div className="border-t border-hair px-4 py-2 text-[10px] leading-relaxed text-faint">
-          Basis risk is payout minus the modelled PML (a HAZUS-MH/FEMA damage-ratio estimate, not a
-          measured loss). <span className="text-over">Amber</span> = the policy overpays for that
-          event; <span className="text-pml">rose</span> = it underpays.
+
+        <div className="border-t border-hair px-4 py-2.5 text-[10px] leading-relaxed text-faint">
+          Basis risk = payout − modelled PML, and PML is a HAZUS-MH/FEMA damage-ratio band
+          midpoint, not a measured loss. Bars scale by basis-risk %{' '}
+          {scale === 'compressed'
+            ? '(log-compressed, so extreme values stay on-scale)'
+            : '(linear — the largest fills the half-track)'}
+          . <span className="text-over">Amber</span> overpays, <span className="text-pml">rose</span>{' '}
+          underpays.
         </div>
       </div>
     </div>

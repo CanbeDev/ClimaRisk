@@ -21,7 +21,7 @@ export default function BiCalculator({ assets, totalInsuredValue }) {
   const totalEstimatedLoss = biLoss + totalInsuredValue
 
   return (
-    <div className="space-y-3 panel rounded-lg p-4">
+    <div className="space-y-3 panel p-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-ink">Business Interruption Estimator</h3>
         <span className="text-xs text-muted">

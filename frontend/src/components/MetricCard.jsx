@@ -27,7 +27,7 @@ export default function MetricCard({ icon: Icon, label, value, amount, format, a
   }
 
   return (
-    <div className="panel panel-hover rounded-[14px] p-4">
+    <div className="panel panel-hover p-4">
       <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted">
         {Icon ? <Icon className="h-3.5 w-3.5" /> : null}
         {label}

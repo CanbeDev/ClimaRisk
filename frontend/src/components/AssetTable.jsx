@@ -4,7 +4,7 @@ export default function AssetTable({ assets }) {
   const sorted = [...assets].sort((a, b) => b.total_insured_value - a.total_insured_value)
 
   return (
-    <div className="overflow-hidden panel rounded-lg">
+    <div className="overflow-hidden panel">
       <div className="border-b border-hair px-4 py-2.5 text-sm font-semibold text-ink">
         Intersected Assets ({assets.length})
       </div>

@@ -35,8 +35,54 @@ const VIEWS = [
   { id: 'report', label: 'Report', icon: FileText },
 ]
 
+// Connection status pill — reflects the real fetch state, not decoration:
+// amber pulse while a request is in flight, rose when the last one failed,
+// green + relative time when data is current, muted when it's gone stale.
+function describeConnection(lastSyncAt, error, spinning, now) {
+  if (spinning) return { cls: 'text-over', dot: 'bg-over animate-pulse', label: 'Syncing…' }
+  if (error) {
+    return {
+      cls: 'text-pml',
+      dot: 'bg-pml',
+      label: 'Connection lost',
+      title: typeof error === 'string' ? error : undefined,
+    }
+  }
+  if (!lastSyncAt) return { cls: 'text-muted', dot: 'bg-muted', label: 'Connecting…' }
+  const secs = Math.max(0, Math.round((now - lastSyncAt) / 1000))
+  const stale = secs > 120
+  return {
+    cls: stale ? 'text-muted' : 'text-ok',
+    dot: stale ? 'bg-muted' : 'bg-ok',
+    label: secs < 10 ? 'Live' : secs < 60 ? `Live · ${secs}s ago` : `Synced ${Math.round(secs / 60)}m ago`,
+    title: `Last successful fetch: ${new Date(lastSyncAt).toLocaleTimeString('en-ZA')}`,
+  }
+}
+
+function ConnectionStatus({ lastSyncAt, error, spinning }) {
+  // A slow clock so the relative label stays current without touching Date.now()
+  // during render (it only runs while idle and connected).
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (spinning || error || !lastSyncAt) return undefined
+    const id = setInterval(() => setNow(Date.now()), 10_000)
+    return () => clearInterval(id)
+  }, [spinning, error, lastSyncAt])
+
+  const s = describeConnection(lastSyncAt, error, spinning, Math.max(now, lastSyncAt ?? 0))
+
+  return (
+    <span className={`flex items-center gap-1.5 text-xs font-medium ${s.cls}`} title={s.title}>
+      <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />
+      {s.label}
+    </span>
+  )
+}
+
 export default function App() {
-  const [view, setView] = useState('map') // 'map' | 'trends' | 'parametric'
+  const [view, setView] = useState('map') // 'map' | 'trends' | 'parametric' | 'report'
+
+  const [lastSyncAt, setLastSyncAt] = useState(null)
 
   const [hazards, setHazards] = useState(null)
   const [assets, setAssets] = useState(null)
@@ -67,6 +113,7 @@ export default function App() {
       const [hazardData, assetData] = await Promise.all([fetchHazards(), fetchAssets()])
       setHazards(hazardData)
       setAssets(assetData)
+      setLastSyncAt(Date.now())
     } catch (err) {
       setMapError(err.message || 'Failed to load map data')
     } finally {
@@ -83,6 +130,7 @@ export default function App() {
     setTrendsError(null)
     try {
       setTrends(await fetchTrends())
+      setLastSyncAt(Date.now())
     } catch (err) {
       setTrendsError(err.message || 'Failed to load hazard history')
     } finally {
@@ -100,6 +148,7 @@ export default function App() {
         fetchFirings(),
       ])
       setParametric({ summary, triggers: triggers.triggers, firings: firings.firings })
+      setLastSyncAt(Date.now())
     } catch (err) {
       setParametricError(err.message || 'Failed to load parametric data')
     } finally {
@@ -112,6 +161,7 @@ export default function App() {
     setReportError(null)
     try {
       setReport(await fetchDisclosure(from, to))
+      setLastSyncAt(Date.now())
     } catch (err) {
       setReportError(err.message || 'Failed to build disclosure report')
     } finally {
@@ -156,6 +206,7 @@ export default function App() {
       const result = await fetchIntersection(hazardEventId)
       if (intersectionRequestRef.current !== requestId) return
       setIntersection(result)
+      setLastSyncAt(Date.now())
     } catch (err) {
       if (intersectionRequestRef.current !== requestId) return
       setIntersectionError(
@@ -262,10 +313,7 @@ export default function App() {
             <RefreshCw className={`h-3.5 w-3.5 ${activeSpinning ? 'animate-spin' : ''}`} />
             Refresh
           </button>
-          <span className="flex items-center gap-1.5 text-xs font-medium text-ok">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ok" />
-            Live
-          </span>
+          <ConnectionStatus lastSyncAt={lastSyncAt} error={activeError} spinning={activeSpinning} />
         </div>
       </header>
 
