@@ -9,3 +9,4 @@
 \i db/migrations/006_assets.sql
 \i db/migrations/007_insured_value.sql
 \i db/migrations/008_parametric_triggers.sql
+\i db/migrations/009_global_events.sql

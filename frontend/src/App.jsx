@@ -1,15 +1,42 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Globe2, LineChart, Loader2, Map as MapIcon, RefreshCw } from 'lucide-react'
+import {
+  AlertTriangle,
+  FileText,
+  Globe2,
+  LineChart,
+  Map as MapIcon,
+  RefreshCw,
+  ShieldAlert,
+} from 'lucide-react'
 import MapPanel from './components/MapPanel'
 import ExposurePanel from './components/ExposurePanel'
-import { fetchAssets, fetchHazards, fetchIntersection, fetchTrends } from './api'
+import { SkeletonCards, SkeletonRows } from './components/Skeleton'
+import {
+  fetchAssets,
+  fetchDisclosure,
+  fetchFirings,
+  fetchHazards,
+  fetchIntersection,
+  fetchParametricSummary,
+  fetchTrends,
+  fetchTriggers,
+} from './api'
 
-// Code-split the trend view: it pulls in recharts (~450 kB), and the map is the
-// default view most sessions never leave. Loaded on first switch to Trends.
+// Code-split the non-default views: Trends pulls in recharts (~450 kB), and most
+// sessions never leave the map. Each loads on first switch to it.
 const TrendsPanel = lazy(() => import('./components/TrendsPanel'))
+const ParametricPanel = lazy(() => import('./components/ParametricPanel'))
+const ReportPanel = lazy(() => import('./components/ReportPanel'))
+
+const VIEWS = [
+  { id: 'map', label: 'Live map', icon: MapIcon },
+  { id: 'trends', label: 'Trends', icon: LineChart },
+  { id: 'parametric', label: 'Parametric', icon: ShieldAlert },
+  { id: 'report', label: 'Report', icon: FileText },
+]
 
 export default function App() {
-  const [view, setView] = useState('map') // 'map' | 'trends'
+  const [view, setView] = useState('map') // 'map' | 'trends' | 'parametric'
 
   const [hazards, setHazards] = useState(null)
   const [assets, setAssets] = useState(null)
@@ -24,6 +51,14 @@ export default function App() {
   const [trends, setTrends] = useState(null)
   const [trendsLoading, setTrendsLoading] = useState(false)
   const [trendsError, setTrendsError] = useState(null)
+
+  const [parametric, setParametric] = useState(null)
+  const [parametricLoading, setParametricLoading] = useState(false)
+  const [parametricError, setParametricError] = useState(null)
+
+  const [report, setReport] = useState(null)
+  const [reportLoading, setReportLoading] = useState(false)
+  const [reportError, setReportError] = useState(null)
 
   const loadMapData = useCallback(async () => {
     setMapLoading(true)
@@ -55,14 +90,57 @@ export default function App() {
     }
   }, [])
 
-  // Lazy-load the trend series the first time the user opens that view — the
-  // map is the default and most sessions never switch, so there's no reason to
-  // pay for /trends/hazards on initial load.
-  useEffect(() => {
-    if (view === 'trends' && trends == null && !trendsLoading && !trendsError) {
-      loadTrends()
+  const loadParametric = useCallback(async () => {
+    setParametricLoading(true)
+    setParametricError(null)
+    try {
+      const [summary, triggers, firings] = await Promise.all([
+        fetchParametricSummary(),
+        fetchTriggers(),
+        fetchFirings(),
+      ])
+      setParametric({ summary, triggers: triggers.triggers, firings: firings.firings })
+    } catch (err) {
+      setParametricError(err.message || 'Failed to load parametric data')
+    } finally {
+      setParametricLoading(false)
     }
-  }, [view, trends, trendsLoading, trendsError, loadTrends])
+  }, [])
+
+  const loadReport = useCallback(async (from, to) => {
+    setReportLoading(true)
+    setReportError(null)
+    try {
+      setReport(await fetchDisclosure(from, to))
+    } catch (err) {
+      setReportError(err.message || 'Failed to build disclosure report')
+    } finally {
+      setReportLoading(false)
+    }
+  }, [])
+
+  // Lazy-load each non-default view's data the first time it's opened.
+  useEffect(() => {
+    if (view === 'trends' && trends == null && !trendsLoading && !trendsError) loadTrends()
+    if (view === 'parametric' && parametric == null && !parametricLoading && !parametricError) {
+      loadParametric()
+    }
+    if (view === 'report' && report == null && !reportLoading && !reportError) loadReport()
+  }, [
+    view,
+    trends,
+    trendsLoading,
+    trendsError,
+    loadTrends,
+    parametric,
+    parametricLoading,
+    parametricError,
+    loadParametric,
+    report,
+    reportLoading,
+    reportError,
+    loadReport,
+  ])
 
   // Guards against out-of-order responses: if the user selects hazard A then B before A's
   // request resolves, only the response matching the *current* request id is applied — a
@@ -110,68 +188,91 @@ export default function App() {
     return new Set(intersection.assets.map((asset) => asset.id))
   }, [intersection])
 
-  const onTrends = view === 'trends'
-  const activeError = onTrends ? trendsError : mapError
-  const activeSpinning = onTrends ? trendsLoading : mapLoading
-  const handleRefresh = () => (onTrends ? loadTrends() : loadMapData())
+  const { activeError, activeSpinning, handleRefresh } = useMemo(() => {
+    if (view === 'trends') {
+      return { activeError: trendsError, activeSpinning: trendsLoading, handleRefresh: loadTrends }
+    }
+    if (view === 'parametric') {
+      return {
+        activeError: parametricError,
+        activeSpinning: parametricLoading,
+        handleRefresh: loadParametric,
+      }
+    }
+    if (view === 'report') {
+      return { activeError: reportError, activeSpinning: reportLoading, handleRefresh: () => loadReport() }
+    }
+    return { activeError: mapError, activeSpinning: mapLoading, handleRefresh: loadMapData }
+  }, [
+    view,
+    trendsError,
+    trendsLoading,
+    loadTrends,
+    parametricError,
+    parametricLoading,
+    loadParametric,
+    reportError,
+    reportLoading,
+    loadReport,
+    mapError,
+    mapLoading,
+    loadMapData,
+  ])
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-slate-950 text-slate-100">
-      <header className="flex shrink-0 items-center justify-between border-b border-slate-800 bg-slate-900/80 px-4 py-2.5">
-        <div className="flex items-center gap-2">
-          <Globe2 className="h-5 w-5 text-cyan-400" />
+    <div className="relative flex h-screen w-screen flex-col bg-ground text-ink">
+      <div className="app-bg" aria-hidden="true" />
+      <header className="relative z-10 flex shrink-0 items-center justify-between bg-surface/85 px-5 py-3 shadow-[0_1px_0_rgba(40,28,16,0.06),0_6px_16px_-10px_rgba(40,28,16,0.14)] backdrop-blur-sm">
+        <div className="flex items-center gap-2.5">
+          <Globe2 className="h-5 w-5 text-brand" />
           <div>
-            <div className="text-sm font-semibold leading-tight">ClimRisk Command Center</div>
-            <div className="text-[11px] leading-tight text-slate-500">
+            <div className="text-[15px] font-semibold leading-tight">ClimRisk Command Center</div>
+            <div className="text-[11px] leading-tight text-muted">
               GDACS × PostGIS exposure intelligence — South Africa
             </div>
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <div className="flex items-center rounded border border-slate-800 p-0.5 text-xs">
-            <button
-              onClick={() => setView('map')}
-              className={`flex items-center gap-1.5 rounded px-2 py-1 ${
-                view === 'map' ? 'bg-slate-800 text-slate-100' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <MapIcon className="h-3.5 w-3.5" />
-              Live map
-            </button>
-            <button
-              onClick={() => setView('trends')}
-              className={`flex items-center gap-1.5 rounded px-2 py-1 ${
-                view === 'trends' ? 'bg-slate-800 text-slate-100' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <LineChart className="h-3.5 w-3.5" />
-              Trends
-            </button>
+          <div className="flex items-center gap-0.5 rounded-lg bg-sunken p-1 text-xs">
+            {VIEWS.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                onClick={() => setView(id)}
+                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1.5 font-medium transition-colors ${
+                  view === id
+                    ? 'bg-brandsoft text-brand shadow-sm'
+                    : 'text-muted hover:text-ink'
+                }`}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {label}
+              </button>
+            ))}
           </div>
           {activeError && (
-            <span className="flex items-center gap-1 text-xs text-rose-400">
+            <span className="flex items-center gap-1 text-xs text-pml">
               <AlertTriangle className="h-3.5 w-3.5" />
               {activeError}
             </span>
           )}
           <button
             onClick={handleRefresh}
-            className="flex items-center gap-1.5 rounded border border-slate-800 px-2 py-1 text-xs text-slate-400 hover:text-slate-200"
+            className="flex items-center gap-1.5 rounded-md bg-surface px-2.5 py-1.5 text-xs text-muted shadow-sm ring-1 ring-hair transition hover:text-ink hover:ring-[#d8cfc2]"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${activeSpinning ? 'animate-spin' : ''}`} />
             Refresh
           </button>
-          <span className="flex items-center gap-1.5 text-xs text-emerald-400">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+          <span className="flex items-center gap-1.5 text-xs font-medium text-ok">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ok" />
             Live
           </span>
         </div>
       </header>
 
-      <main className="flex flex-1 overflow-hidden">
-        {view === 'map' ? (
+      <main className="relative z-10 flex flex-1 overflow-hidden">
+        {view === 'map' && (
           <>
-            <div className="h-full w-[65%] border-r border-slate-800">
+            <div className="h-full w-[64%]">
               <MapPanel
                 hazards={hazards}
                 assets={assets}
@@ -180,7 +281,7 @@ export default function App() {
                 onSelectHazard={handleSelectHazard}
               />
             </div>
-            <div className="h-full w-[35%]">
+            <div className="h-full w-[36%] border-l border-hair bg-ground">
               <ExposurePanel
                 selectedHazardMeta={selectedHazardMeta}
                 intersection={intersection}
@@ -190,22 +291,44 @@ export default function App() {
               />
             </div>
           </>
-        ) : (
+        )}
+
+        {view !== 'map' && (
           <div className="h-full w-full">
             <Suspense
               fallback={
-                <div className="flex h-full items-center justify-center gap-2 text-sm text-slate-500">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading trend view…
+                <div className="mx-auto flex h-full max-w-5xl flex-col gap-5 p-6">
+                  <SkeletonCards count={4} hero />
+                  <SkeletonRows rows={5} />
                 </div>
               }
             >
-              <TrendsPanel
-                trends={trends}
-                loading={trendsLoading}
-                error={trendsError}
-                onRetry={loadTrends}
-              />
+              {view === 'trends' && (
+                <TrendsPanel
+                  trends={trends}
+                  loading={trendsLoading}
+                  error={trendsError}
+                  onRetry={loadTrends}
+                />
+              )}
+              {view === 'parametric' && (
+                <ParametricPanel
+                  summary={parametric?.summary}
+                  triggers={parametric?.triggers}
+                  firings={parametric?.firings}
+                  loading={parametricLoading}
+                  error={parametricError}
+                  onChanged={loadParametric}
+                />
+              )}
+              {view === 'report' && (
+                <ReportPanel
+                  report={report}
+                  loading={reportLoading}
+                  error={reportError}
+                  onReload={loadReport}
+                />
+              )}
             </Suspense>
           </div>
         )}

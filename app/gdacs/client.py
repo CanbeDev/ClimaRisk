@@ -78,18 +78,15 @@ class GDACSClient:
         *,
         from_date: str,
         to_date: str,
-        country: str,
         event_list: str,
         page_number: int = 1,
         page_size: int = 100,
     ) -> list[dict[str, Any]]:
         # NOTE: GDACS's SEARCH `country` filter expects a full country name
         # (e.g. "South Africa"), not an ISO3 code, and silently returns 204
-        # No Content for any ISO3 value. We fetch globally instead and rely
-        # on event_affects_country() (ISO3-based, applied in process_features)
-        # to do the real filtering locally — the same logic already used for
-        # the realtime EVENTS4APP path. `country` is kept as an argument for
-        # logging only; it is intentionally NOT sent to GDACS.
+        # No Content for any ISO3 value — so it is never sent. Ingestion is
+        # global: every event returned is stored, and country scoping happens
+        # in the read queries, not here.
         params = {
             "eventlist": event_list,
             "fromdate": from_date,
@@ -98,8 +95,7 @@ class GDACSClient:
             "pagesize": page_size,
         }
         log.info(
-            "Searching GDACS events (global, filtering locally for %s) page=%d from=%s to=%s",
-            country,
+            "Searching GDACS events (global) page=%d from=%s to=%s",
             page_number,
             from_date,
             to_date,

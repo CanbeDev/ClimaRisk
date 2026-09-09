@@ -141,6 +141,19 @@ def test_reevaluation_removes_stale_firing(client, auth_headers, make_trigger, z
     assert client.get(f"/parametric/firings?trigger_id={tid}").json()["count"] == 0
 
 
+def test_deactivating_a_rule_clears_its_firings(client, auth_headers, make_trigger, zaf_flood_hazard_id):
+    tid = make_trigger(name="pytest-deactivate", min_alert_level="Orange")
+
+    client.post(f"/parametric/evaluate/{zaf_flood_hazard_id}", headers=auth_headers)
+    assert client.get(f"/parametric/firings?trigger_id={tid}").json()["count"] == 1
+
+    patch = client.patch(
+        f"/parametric/triggers/{tid}", json={"is_active": False}, headers=auth_headers
+    )
+    assert patch.status_code == 200
+    assert client.get(f"/parametric/firings?trigger_id={tid}").json()["count"] == 0
+
+
 def test_tiv_share_payout_matches_exposure(client, auth_headers, make_trigger, zaf_flood_hazard_id):
     tid = make_trigger(name="pytest-tivshare", payout_kind="tiv_share", payout_value=0.25)
 
@@ -150,6 +163,21 @@ def test_tiv_share_payout_matches_exposure(client, auth_headers, make_trigger, z
 
     assert ev["fired"] is True
     assert ev["payout_amount"] == pytest.approx(0.25 * tiv)
+
+
+def test_summary_reflects_a_firing(client, auth_headers, make_trigger, zaf_flood_hazard_id):
+    before = client.get("/parametric/summary").json()
+
+    tid = make_trigger(name="pytest-summary", payout_value=7_000_000)
+    client.post(f"/parametric/evaluate/{zaf_flood_hazard_id}", headers=auth_headers)
+
+    after = client.get("/parametric/summary").json()
+    assert after["rule_count"] == before["rule_count"] + 1
+    assert after["active_rule_count"] == before["active_rule_count"] + 1
+    assert after["firing_count"] == before["firing_count"] + 1
+    assert after["total_outstanding_payout"] == pytest.approx(
+        before["total_outstanding_payout"] + 7_000_000
+    )
 
 
 def test_evaluate_unknown_event_is_404(client, auth_headers, parametric_schema):

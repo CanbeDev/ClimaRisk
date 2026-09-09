@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # Comma-separated list of origins allowed to call the API (dashboard dev servers).
     cors_allowed_origins: str = "http://localhost:5173,http://localhost:3000"
 
+    # Name printed on the climate disclosure report (Step 8 / Phase 3).
+    report_org_name: str = "ClimRisk Demo Portfolio"
+
 
 @lru_cache
 def get_settings() -> Settings:

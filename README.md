@@ -3,21 +3,23 @@
 **A South Africa–focused climate hazard exposure platform.** ClimRisk ingests live disaster
 data from [GDACS](https://www.gdacs.org/), stores hazard footprints in PostGIS, intersects them
 against a portfolio of insured assets, and reports the financial exposure — Total Insured Value
-at risk, Probable Maximum Loss, Protection Gap, business-interruption loss — plus a parametric
-trigger engine that decides which index-based insurance rules pay out for a given event and by
-how much.
+at risk, Probable Maximum Loss, Protection Gap, business-interruption loss. On top of that sits
+a parametric trigger engine that decides which index-based insurance rules pay out for a given
+event and by how much, and a TCFD-style disclosure report that rolls it all up for a reporting
+period.
 
 It is three deployable pieces that share one database and nothing else:
 
 | Piece | What it is | Code |
 |---|---|---|
 | **Ingestion service** | Scheduled + on-demand GDACS → PostGIS pipeline (realtime feed, historical backfill, polygon enrichment) | `app/gdacs`, `app/ingestion`, `app/scheduler` |
-| **Query API** | FastAPI read/write service: spatial-financial exposure, trend series, parametric rules | `app/routes`, `app/services` |
-| **Dashboard** | Static React + Leaflet SPA: hazard footprints vs. asset exposure, financial metrics, historical trends | `frontend/` |
+| **Query API** | FastAPI read/write service: spatial-financial exposure, trend series, parametric rules, disclosure report | `app/routes`, `app/services` |
+| **Dashboard** | Static React + Leaflet SPA: map, financial metrics, historical trends, parametric rules & ledger, disclosure report | `frontend/` |
 
-The design rationale — why hand-written SQL over an ORM, why country filtering is client-side,
-why the damage ratio is a documented approximation, why `trigger_firings` is a live ledger
-rather than a log — is in **[docs/architecture.md](docs/architecture.md)**.
+The design rationale — why hand-written SQL over an ORM, why ingestion stores the world but
+every financial view scopes to South Africa in SQL, why the damage ratio is a documented
+approximation, why `trigger_firings` is a live ledger rather than a log — is in
+**[docs/architecture.md](docs/architecture.md)**.
 
 ## Stack
 
@@ -39,8 +41,8 @@ Against the ClimRisk Master Document build order:
 | 4 | Map interface | ✅ Done |
 | 5 | Financial dashboard: Exposure, BI loss, PML, Protection Gap | ✅ Done |
 | 6 | Historical / trend view | ✅ Done |
-| 7 | Parametric trigger rules engine (Phase 2) | ✅ First slice |
-| 8 | Climate disclosure report export (Phase 3) | ⬜ Not started |
+| 7 | Parametric trigger rules engine (Phase 2) | ✅ Done |
+| 8 | Climate disclosure report export (Phase 3) | ✅ Done |
 
 ---
 
@@ -54,13 +56,14 @@ psql climrisk -c "CREATE EXTENSION postgis;"
 psql climrisk -f schema.sql          # runs every migration in order
 ```
 
-Or apply migrations individually from `db/migrations/` (`001` … `008`).
+Or apply migrations individually from `db/migrations/` (`001` … `009`).
 
-> **Migrations `005`–`008` must be run as the table owner** (e.g. `postgres`), not as
-> `climrisk_app` — the app role can neither grant itself access nor `CREATE TABLE`. `005` grants
-> `climrisk_app` read/write on existing tables **and** sets `ALTER DEFAULT PRIVILEGES`, so tables
-> created by later migrations (`assets` in `006`, the parametric tables in `008`) inherit the
-> grant automatically when applied by that same owner.
+> **Migrations `005`–`009` must be run as the table owner** (e.g. `postgres`), not as
+> `climrisk_app` — the app role can neither grant itself access, `CREATE TABLE`, nor
+> `CREATE`/`DROP INDEX`. `005` grants `climrisk_app` read/write on existing tables **and** sets
+> `ALTER DEFAULT PRIVILEGES`, so tables created by later migrations (`assets` in `006`, the
+> parametric tables in `008`) inherit the grant automatically when applied by that same owner.
+> `009` is an index-only adjustment for worldwide event volume.
 
 ### 2. Backend
 
@@ -81,6 +84,7 @@ Key settings (`.env`):
 | `SCHEDULER_ENABLED` | Run the background polling jobs on startup (default `true`) |
 | `INGEST_API_KEY` | If set, `/ingest/*` and `/parametric/*` write + evaluate routes require a matching `X-API-Key` header. Unset = open (local/dev only). |
 | `PARAMETRIC_AUTO_EVALUATE`, `PARAMETRIC_INTERVAL_HOURS` | Scheduled re-evaluation of active trigger rules (default on, every 6h) |
+| `REPORT_ORG_NAME` | Name printed on the disclosure report (default `ClimRisk Demo Portfolio`) |
 
 ### 3. Frontend
 
@@ -175,10 +179,13 @@ event over time.
 ### Parametric triggers — `/parametric/*`
 
 Index-based cover: a rule pays a predefined amount when measurable conditions on a hazard event
-are met. See [`app/services/parametric.py`](app/services/parametric.py) (needs migration `008`).
+are met. See [`app/services/parametric.py`](app/services/parametric.py). Driven by the
+**Parametric** view in the dashboard (third top-level toggle) — rule table, create form,
+payout ledger, and a "re-evaluate all events" action.
 
 | Route | Purpose | Auth |
 |---|---|---|
+| `GET /parametric/summary` | Rule counts + total outstanding payout + net basis risk | open |
 | `GET /parametric/triggers` | List rules | open |
 | `POST /parametric/triggers` | Create a rule | gated |
 | `PATCH` / `DELETE /parametric/triggers/{id}` | Edit / remove a rule | gated |
@@ -192,7 +199,11 @@ Payout `payout_kind`: `fixed` (flat), `per_asset` (× exposed asset count), `tiv
 (fraction × exposed TIV). Each firing records
 `basis_risk = payout_amount − probable_maximum_loss` — the signed gap between the parametric
 payout and the modelled loss (positive = the policy overpays for that event). `trigger_firings`
-is a **live ledger**: a rule that stops firing on re-evaluation has its row removed.
+is a **live ledger**: a rule's row is removed when it stops firing on re-evaluation, or when the
+rule is deactivated or deleted.
+
+The dashboard sends the operator's `X-API-Key` (kept in `localStorage`) only on the gated calls;
+the CORS config allows `GET`, `POST`, `PATCH`, `DELETE` from the dev-server origins.
 
 ```bash
 # A rule: any Orange+ flood that hits an insured asset pays R10m flat
@@ -204,6 +215,27 @@ curl -X POST http://localhost:8000/parametric/triggers \
 # Evaluate against hazard_events.id = 4, then read the payout ledger
 curl -X POST http://localhost:8000/parametric/evaluate/4 ${INGEST_API_KEY:+-H "X-API-Key: $INGEST_API_KEY"}
 curl "http://localhost:8000/parametric/firings?hazard_event_id=4"
+```
+
+### Climate disclosure report — `/reports/*` (Phase 3)
+
+A TCFD-style report for a reporting period: portfolio totals, per-event exposure (TIV at risk,
+PML, protection gap), the parametric position, and a methodology & limitations section. See
+[`app/services/disclosure.py`](app/services/disclosure.py). Reached from the **Report** view in
+the dashboard (period pickers + inline preview + a "Printable report" button).
+
+| Route | Returns |
+|---|---|
+| `GET /reports/disclosure[?from=&to=]` | Structured JSON |
+| `GET /reports/disclosure.html[?from=&to=]` | Self-contained print-styled HTML (browser → PDF) |
+
+`from` / `to` are `YYYY-MM-DD`; unset, the period spans the first stored event to today. The
+report is rebuilt live per request (not stored), and reuses the same trend + parametric services
+so its numbers match the other views. Set `REPORT_ORG_NAME` for the printed heading.
+
+```bash
+curl "http://localhost:8000/reports/disclosure?from=2022-01-01&to=2022-12-31"
+# open the printable version in a browser and Ctrl-P → Save as PDF
 ```
 
 ### Map data
@@ -241,19 +273,26 @@ ORDER BY f.evaluated_at DESC;
 
 | Job | Endpoint |
 |---|---|
-| Realtime | `GET /events/geteventlist/EVENTS4APP` (client-side ISO3 filter) |
-| Backfill | `GET /events/geteventlist/SEARCH` (fetched globally, filtered locally — see below) |
-| Polygons | `GET /polygons/getgeometry?eventtype=&eventid=&episodeid=` |
+| Realtime | `GET /events/geteventlist/EVENTS4APP` (worldwide feed, stored as-is) |
+| Backfill | `GET /events/geteventlist/SEARCH` (worldwide; `country` param unusable — see below) |
+| Polygons | `GET /polygons/getgeometry?eventtype=&eventid=&episodeid=` (country-scoped) |
 
 Swagger: <https://www.gdacs.org/gdacsapi/swagger/index.html>
 
 ## Known limitations
 
-- **EVENTS4APP is global** — country events are filtered client-side; use SEARCH backfill for history.
+- **Ingestion is worldwide; the product is South Africa** — `hazard_events` stores every GDACS
+  event regardless of country. Assets are SA-only and every financial/exposure query is
+  country-scoped in SQL (`/hazards` default, `/trends/hazards`, `/exposure/*`, `/reports/*`,
+  parametric evaluation), so a flood in Indonesia is stored but never appears in a SA view.
+  `GET /hazards?scope=global` returns the unfiltered worldwide set for the 3D globe view.
 - **SEARCH's `country` filter is unreliable** — GDACS expects a full country name there (e.g.
   "South Africa"), not an ISO3 code, and silently returns `204 No Content` for ISO3 values
-  (confirmed across multiple countries). Backfill fetches globally and filters locally with
-  `event_affects_country()` — the same ISO3 logic the realtime path uses.
+  (confirmed across multiple countries). It is not sent; the SEARCH feed is consumed globally.
+- **Polygon enrichment stays country-scoped** — the 6h geometry job only fetches footprints for
+  events affecting `GDACS_COUNTRY_FILTER`, so its workload does not grow with global ingestion.
+  If it is ever made global, the cadence + GDACS rate limits would need a ZAF-first priority
+  pass — see `docs/followup-items.txt` #5.
 - **Cyclone footprints are one cone segment, not a track corridor** — TC geometry responses
   interleave many per-forecast-point cone polygons with track LineStrings; only the first cone
   polygon is stored.

@@ -11,19 +11,22 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { AlertTriangle, CalendarRange, Layers, Loader2, ShieldOff, TrendingDown } from 'lucide-react'
+import { AlertTriangle, CalendarRange, Layers, ShieldOff, TrendingDown } from 'lucide-react'
 import { currency, DEFAULT_HAZARD_COLOR, getAlertColor, HAZARD_COLORS } from '../lib/theme'
 import MetricCard from './MetricCard'
+import { SkeletonCards, SkeletonChart } from './Skeleton'
 
 const EMPTY = []
 
-const AXIS = '#475569' // slate-600
-const TICK = { fill: '#94a3b8', fontSize: 11 } // slate-400
-const GRID = '#1e293b' // slate-800
+const AXIS = '#c9c1b5' // warm hairline
+const TICK = { fill: '#8c8278', fontSize: 11 } // warm grey
+const GRID = '#ece5db' // hair
 const TOOLTIP_STYLE = {
-  backgroundColor: '#0f172a',
-  border: '1px solid #1e293b',
-  borderRadius: 8,
+  backgroundColor: '#ffffff',
+  border: '1px solid #e7e0d7',
+  borderRadius: 10,
+  boxShadow: '0 6px 20px -6px rgba(40,28,16,0.18)',
+  color: '#211d18',
   fontSize: 12,
 }
 
@@ -46,12 +49,12 @@ function yearOf(iso) {
 
 function ChartCard({ icon: Icon, title, subtitle, children }) {
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
-      <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+    <div className="panel rounded-[14px] p-5">
+      <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted">
         <Icon className="h-3.5 w-3.5" />
         {title}
       </div>
-      {subtitle && <div className="mt-0.5 text-[11px] text-slate-600">{subtitle}</div>}
+      {subtitle && <div className="mt-0.5 text-[11px] text-faint">{subtitle}</div>}
       <div className="mt-3">{children}</div>
     </div>
   )
@@ -60,7 +63,7 @@ function ChartCard({ icon: Icon, title, subtitle, children }) {
 function FinancialTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null
   return (
-    <div style={TOOLTIP_STYLE} className="px-3 py-2 text-slate-200">
+    <div style={TOOLTIP_STYLE} className="px-3 py-2 text-ink">
       <div className="mb-1 font-semibold">{label}</div>
       {payload.map((entry) => (
         <div key={entry.dataKey} className="flex items-center justify-between gap-4">
@@ -156,9 +159,10 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
 
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center gap-2 text-sm text-slate-500">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        Loading hazard history…
+      <div className="mx-auto flex h-full max-w-5xl flex-col gap-5 p-6">
+        <SkeletonCards count={4} hero />
+        <SkeletonChart height={200} />
+        <SkeletonChart height={180} />
       </div>
     )
   }
@@ -166,11 +170,11 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
   if (error) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center">
-        <AlertTriangle className="h-8 w-8 text-rose-500" />
-        <div className="text-sm text-slate-400">{error}</div>
+        <AlertTriangle className="h-8 w-8 text-pml" />
+        <div className="text-sm text-muted">{error}</div>
         <button
           onClick={onRetry}
-          className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+          className="rounded border border-hair px-3 py-1.5 text-xs text-ink hover:bg-sunken"
         >
           Retry
         </button>
@@ -181,8 +185,8 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
   if (!events.length) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-        <CalendarRange className="h-10 w-10 text-slate-700" />
-        <div className="max-w-sm text-sm text-slate-500">
+        <CalendarRange className="h-10 w-10 text-faint" />
+        <div className="max-w-sm text-sm text-muted">
           No hazard events ingested yet for {trends?.country || 'this country'}. Run a backfill to
           populate the historical view.
         </div>
@@ -191,29 +195,33 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
   }
 
   return (
-    <div className="mx-auto flex h-full max-w-5xl flex-col gap-4 overflow-y-auto p-4">
+    <div className="mx-auto flex h-full max-w-5xl flex-col gap-5 overflow-y-auto p-6">
       <div>
-        <h2 className="text-sm font-semibold text-slate-200">Historical hazard &amp; exposure trend</h2>
-        <p className="text-[11px] text-slate-500">
+        <h2 className="text-sm font-semibold text-ink">Historical hazard &amp; exposure trend</h2>
+        <p className="text-[11px] text-muted">
           Every ingested event for {trends?.country || '—'}, over time. Exposure figures reuse the same
           TIV / PML / Protection-Gap logic as the per-event panel.
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <MetricCard icon={CalendarRange} label="Events" value={summary.total} />
+      <MetricCard
+        icon={TrendingDown}
+        label="Peak event PML"
+        hero
+        glow="#e0454a"
+        {...(summary.peakPml
+          ? { amount: summary.peakPml.probable_maximum_loss, format: compactZAR }
+          : { value: '—' })}
+      />
+      <div className="grid grid-cols-3 gap-3">
+        <MetricCard icon={CalendarRange} label="Events" amount={summary.total} format={(n) => Math.round(n).toString()} />
         <MetricCard icon={CalendarRange} label="Span" value={summary.span} />
         <MetricCard
           icon={Layers}
           label="With exposed assets"
-          value={summary.withExposure}
-          accent="text-cyan-400"
-        />
-        <MetricCard
-          icon={TrendingDown}
-          label="Peak event PML"
-          value={summary.peakPml ? compactZAR(summary.peakPml.probable_maximum_loss) : '—'}
-          accent="text-rose-400"
+          amount={summary.withExposure}
+          format={(n) => Math.round(n).toString()}
+          accent="text-brand"
         />
       </div>
 
@@ -224,6 +232,17 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
       >
         <ResponsiveContainer width="100%" height={240}>
           <BarChart data={byYearType} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+            <defs>
+              {hazardsPresent.map((code) => {
+                const c = (HAZARD_COLORS[code] || DEFAULT_HAZARD_COLOR).fill
+                return (
+                  <linearGradient key={code} id={`bar-hz-${code}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={c} stopOpacity={0.95} />
+                    <stop offset="100%" stopColor={c} stopOpacity={0.28} />
+                  </linearGradient>
+                )
+              })}
+            </defs>
             <CartesianGrid stroke={GRID} vertical={false} />
             <XAxis dataKey="year" stroke={AXIS} tick={TICK} />
             <YAxis
@@ -233,7 +252,7 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
               domain={[0, countMax]}
               tickCount={countMax + 1}
             />
-            <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#1e293b55' }} />
+            <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#00000008' }} />
             <Legend wrapperStyle={{ fontSize: 11 }} />
             {hazardsPresent.map((code) => (
               <Bar
@@ -242,7 +261,7 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
                 stackId="hz"
                 maxBarSize={72}
                 name={(HAZARD_COLORS[code] || DEFAULT_HAZARD_COLOR).label}
-                fill={(HAZARD_COLORS[code] || DEFAULT_HAZARD_COLOR).fill}
+                fill={`url(#bar-hz-${code})`}
               />
             ))}
           </BarChart>
@@ -257,6 +276,17 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
         {alertsPresent.length ? (
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={byYearAlert} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+              <defs>
+                {alertsPresent.map((level) => {
+                  const c = getAlertColor(level)
+                  return (
+                    <linearGradient key={level} id={`bar-al-${level}`} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={c} stopOpacity={0.95} />
+                      <stop offset="100%" stopColor={c} stopOpacity={0.28} />
+                    </linearGradient>
+                  )
+                })}
+              </defs>
               <CartesianGrid stroke={GRID} vertical={false} />
               <XAxis dataKey="year" stroke={AXIS} tick={TICK} />
               <YAxis
@@ -266,7 +296,7 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
                 domain={[0, countMax]}
                 tickCount={countMax + 1}
               />
-              <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#1e293b55' }} />
+              <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#00000008' }} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               {alertsPresent.map((level) => (
                 <Bar
@@ -275,13 +305,13 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
                   stackId="al"
                   maxBarSize={72}
                   name={level}
-                  fill={getAlertColor(level)}
+                  fill={`url(#bar-al-${level})`}
                 />
               ))}
             </BarChart>
           </ResponsiveContainer>
         ) : (
-          <div className="py-8 text-center text-xs text-slate-600">No alert levels recorded on these events.</div>
+          <div className="py-8 text-center text-xs text-faint">No alert levels recorded on these events.</div>
         )}
       </ChartCard>
 
@@ -292,17 +322,23 @@ export default function TrendsPanel({ trends, loading, error, onRetry }) {
       >
         <ResponsiveContainer width="100%" height={260}>
           <ComposedChart data={financial} margin={{ top: 4, right: 8, bottom: 0, left: 4 }}>
+            <defs>
+              <linearGradient id="bar-tiv" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#ff6a2b" stopOpacity={0.7} />
+                <stop offset="100%" stopColor="#ff6a2b" stopOpacity={0.14} />
+              </linearGradient>
+            </defs>
             <CartesianGrid stroke={GRID} vertical={false} />
             <XAxis dataKey="date" stroke={AXIS} tick={TICK} />
             <YAxis stroke={AXIS} tick={TICK} tickFormatter={compactZAR} width={64} />
-            <Tooltip content={<FinancialTooltip />} cursor={{ fill: '#1e293b55' }} />
+            <Tooltip content={<FinancialTooltip />} cursor={{ fill: '#00000008' }} />
             <Legend wrapperStyle={{ fontSize: 11 }} />
-            <Bar dataKey="tiv" name="TIV at risk" fill="#22d3ee" fillOpacity={0.55} maxBarSize={72} />
-            <Line dataKey="pml" name="PML" stroke="#f43f5e" strokeWidth={2} dot={{ r: 3 }} />
-            <Line dataKey="gap" name="Protection gap" stroke="#fb923c" strokeWidth={2} dot={{ r: 3 }} strokeDasharray="4 3" />
+            <Bar dataKey="tiv" name="TIV at risk" fill="url(#bar-tiv)" maxBarSize={72} />
+            <Line dataKey="pml" name="PML" stroke="#e0454a" strokeWidth={2} dot={{ r: 3 }} />
+            <Line dataKey="gap" name="Protection gap" stroke="#9a6b1e" strokeWidth={2} dot={{ r: 3 }} strokeDasharray="4 3" />
           </ComposedChart>
         </ResponsiveContainer>
-        <div className="mt-2 text-[10px] leading-relaxed text-slate-600">
+        <div className="mt-2 text-[10px] leading-relaxed text-faint">
           Events with no footprint or no intersecting assets show as zero exposure — they still count
           toward frequency above. PML uses the documented HAZUS-MH/FEMA band midpoint per hazard type
           and alert level, not a per-event vulnerability assessment.

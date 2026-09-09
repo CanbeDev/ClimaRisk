@@ -311,24 +311,28 @@ def process_features(
     run_id: int,
     features: list[dict[str, Any]],
     *,
-    country_filter: Optional[str],
     ingestion_source: str,
     fetch_polygons: bool = False,
     client: Any = None,
     chunk_size: int = 20,
 ) -> IngestionStats:
+    """Parse → upsert every GDACS feature into hazard_events.
+
+    Ingestion is **global**: no country filter here. GDACS's realtime and
+    SEARCH feeds are both worldwide, and every event is stored regardless of
+    which country it affects. The read side stays country-scoped in SQL —
+    /hazards, /trends/hazards, evaluate_all_events and fetch_pending_polygons
+    all carry `iso3 = %s OR %s = ANY(affected_countries)`; run_intersection is
+    per-footprint against South-African-only assets — so a foreign event is
+    stored but never reaches any financial/exposure view.
+    """
     stats = IngestionStats(events_fetched=len(features))
     pending_since_commit = 0
 
     for feature in features:
         props = feature.get("properties") if isinstance(feature, dict) else None
 
-        from app.gdacs.parser import event_affects_country, parse_feature
-
-        country_properties = props if isinstance(props, dict) else {}
-        if country_filter and not event_affects_country(country_properties, country_filter):
-            stats.events_skipped += 1
-            continue
+        from app.gdacs.parser import parse_feature
 
         with repo.conn.cursor() as cur:
             cur.execute("SAVEPOINT event_sp")

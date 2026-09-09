@@ -14,6 +14,7 @@ from app.routes.exposure import router as exposure_router
 from app.routes.hazards import router as hazards_router
 from app.routes.health import router as health_router
 from app.routes.parametric import router as parametric_router
+from app.routes.reports import router as reports_router
 from app.routes.trends import router as trends_router
 from app.scheduler.jobs import start_scheduler, stop_scheduler
 
@@ -53,7 +54,7 @@ settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in settings.cors_allowed_origins.split(",") if origin.strip()],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -63,3 +64,4 @@ app.include_router(hazards_router)
 app.include_router(assets_router)
 app.include_router(trends_router)
 app.include_router(parametric_router)
+app.include_router(reports_router)

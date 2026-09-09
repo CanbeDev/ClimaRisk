@@ -1,8 +1,37 @@
 @import "tailwindcss";
 @import "leaflet/dist/leaflet.css";
 
-:root {
-  color-scheme: dark;
+/* ---------------------------------------------------------------------------
+   Light warm-industrial theme — inspired by high-end oil & gas operations
+   dashboards. Near-white warm ground, white cards elevated by shadow (not
+   border), saturated orange as the primary brand, near-black reserved for one
+   high-contrast callout per view (the hero metric).
+--------------------------------------------------------------------------- */
+@theme {
+  --color-ground: #f6f3ef; /* page background — warm off-white, not pure white */
+  --color-surface: #ffffff; /* cards */
+  --color-sunken: #efeae3; /* insets, table headers, skeletons */
+  --color-row: #faf7f3; /* table row hover */
+
+  --color-ink: #211d18; /* primary text / values — warm near-black */
+  --color-muted: #6b6258; /* labels, secondary text — warm grey */
+  --color-faint: #8c8278; /* the "modeled number" caveat text — warm grey, legible on white */
+  --color-hair: #e7e0d7; /* table dividers, field rings */
+
+  --color-brand: #ff6a2b; /* primary — exposure / TIV, primary buttons, active nav, hero */
+  --color-brandink: #e2571c; /* brand hover / pressed */
+  --color-brandsoft: #ffefe6; /* tinted brand background (active nav, badges) */
+
+  --color-pml: #e0454a; /* loss / PML / basis-risk underpay */
+  --color-gap: #9a6b1e; /* protection gap — muted gold, distinct from brand orange */
+  --color-over: #cd7a12; /* basis-risk overpay — amber */
+  --color-ok: #157f43; /* active / healthy — emerald, darkened for white bg */
+
+  --color-dark: #1b1712; /* the sparing high-contrast callout card */
+  --color-darkink: #f6f3ef; /* text on the dark card */
+  --color-darkmuted: #a8a097; /* labels on the dark card */
+
+  --radius-panel: 14px;
 }
 
 html,
@@ -10,38 +39,203 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background-color: #020617; /* slate-950 */
+  background-color: var(--color-ground);
+  color: var(--color-ink);
 }
 
+/* ---------------------------------------------------------------------------
+   Ambient background — a slow, very faint warm drift. GPU-cheap, easy to miss.
+--------------------------------------------------------------------------- */
+.app-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.app-bg::before,
+.app-bg::after {
+  content: "";
+  position: absolute;
+  width: 64vmax;
+  height: 64vmax;
+  border-radius: 9999px;
+  filter: blur(60px);
+  opacity: 0.05;
+  will-change: transform;
+}
+.app-bg::before {
+  background: radial-gradient(circle at center, var(--color-brand), transparent 66%);
+  top: -24vmax;
+  left: -14vmax;
+  animation: drift-a 52s ease-in-out infinite alternate;
+}
+.app-bg::after {
+  background: radial-gradient(circle at center, #c9a06a, transparent 66%);
+  bottom: -28vmax;
+  right: -16vmax;
+  animation: drift-b 64s ease-in-out infinite alternate;
+}
+@keyframes drift-a {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(6vmax, 4vmax, 0) scale(1.12); }
+}
+@keyframes drift-b {
+  from { transform: translate3d(0, 0, 0) scale(1.1); }
+  to { transform: translate3d(-5vmax, -4vmax, 0) scale(1); }
+}
+
+/* ---------------------------------------------------------------------------
+   Panels — white, elevated by shadow, generously rounded.
+--------------------------------------------------------------------------- */
+.panel {
+  background: var(--color-surface);
+  border-radius: var(--radius-panel);
+  box-shadow:
+    0 1px 2px rgba(40, 28, 16, 0.04),
+    0 6px 16px -6px rgba(40, 28, 16, 0.10);
+  transition: box-shadow 180ms ease, transform 180ms ease;
+}
+.panel-hover:hover {
+  box-shadow:
+    0 2px 6px rgba(40, 28, 16, 0.06),
+    0 18px 40px -14px rgba(40, 28, 16, 0.16);
+}
+
+/* ---------------------------------------------------------------------------
+   Hero metric — the one near-black callout per view. Big, light-weight,
+   confident display number in brand orange over a small tracked-grey label.
+--------------------------------------------------------------------------- */
+.hero-metric {
+  position: relative;
+  overflow: hidden;
+  background: var(--color-dark);
+  border-radius: var(--radius-panel);
+  box-shadow:
+    0 1px 2px rgba(20, 14, 8, 0.10),
+    0 20px 48px -18px rgba(20, 14, 8, 0.35);
+}
+.hero-metric::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 64%;
+  background: radial-gradient(56% 100% at 22% 100%, var(--glow, var(--color-brand)) 0%, transparent 72%);
+  opacity: 0.16;
+  pointer-events: none;
+}
+.hero-value {
+  color: var(--glow, var(--color-brand));
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  line-height: 1.02;
+  font-size: clamp(2.75rem, 6vw, 3.75rem); /* ~44–60px */
+}
+
+/* ---------------------------------------------------------------------------
+   Skeleton loaders — shimmer over a shaped placeholder.
+--------------------------------------------------------------------------- */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--color-sunken);
+  border-radius: 8px;
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), transparent);
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+@keyframes shimmer {
+  to { transform: translateX(100%); }
+}
+
+/* ---------------------------------------------------------------------------
+   Leaflet — light basemap, white tooltips, hue glow on footprints.
+--------------------------------------------------------------------------- */
 .leaflet-container {
-  background-color: #020617;
+  background-color: var(--color-ground);
   font-family: inherit;
 }
-
 .leaflet-popup-content-wrapper,
 .leaflet-tooltip {
-  background-color: #0f172a;
-  color: #e2e8f0;
-  border: 1px solid #1e293b;
+  background-color: var(--color-surface);
+  color: var(--color-ink);
+  border: 1px solid var(--color-hair);
+  box-shadow: 0 4px 14px -4px rgba(40, 28, 16, 0.2);
 }
-
-.leaflet-tooltip {
-  box-shadow: none;
-}
-
 .leaflet-tooltip-top:before {
-  border-top-color: #1e293b;
+  border-top-color: var(--color-surface);
+}
+.leaflet-bar a {
+  background-color: var(--color-surface);
+  color: var(--color-ink);
+  border-bottom-color: var(--color-hair);
 }
 
-/* Slim dark scrollbars for panels */
+.leaflet-overlay-pane path {
+  animation: poly-in 480ms ease both;
+}
+@keyframes poly-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.hazard-poly--FL { filter: drop-shadow(0 0 5px rgba(37, 99, 235, 0.45)); }
+.hazard-poly--TC { filter: drop-shadow(0 0 5px rgba(124, 58, 237, 0.45)); }
+.hazard-poly--EQ { filter: drop-shadow(0 0 5px rgba(15, 118, 110, 0.45)); }
+.hazard-poly--VO { filter: drop-shadow(0 0 5px rgba(219, 39, 119, 0.45)); }
+.hazard-poly--WF { filter: drop-shadow(0 0 5px rgba(124, 45, 18, 0.5)); }
+.hazard-poly--DR { filter: drop-shadow(0 0 5px rgba(234, 179, 8, 0.5)); }
+/* The selected footprint is the only path with a pattern fill (the orange
+   crosshatch). Key the "breathe" off that rather than a class — Leaflet's
+   setStyle updates the fill attribute on re-selection but not className. */
+.leaflet-overlay-pane path[fill^="url("] {
+  animation: poly-breathe 2.6s ease-in-out infinite;
+}
+@keyframes poly-breathe {
+  0%, 100% { fill-opacity: 0.72; }
+  50% { fill-opacity: 1; }
+}
+.asset-dot--exposed {
+  filter: drop-shadow(0 0 6px rgba(255, 106, 43, 0.65));
+}
+
+/* Surveyed-node glyphs for assets inside a selected footprint (divIcon). */
+.asset-node {
+  display: block;
+  box-sizing: border-box;
+  background: var(--c);
+  border: 1.5px solid #ff6a2b;
+  box-shadow: 0 0 7px rgba(255, 106, 43, 0.6);
+}
+.asset-node--circle { border-radius: 9999px; }
+.asset-node--square { border-radius: 2px; }
+.asset-node--diamond { border-radius: 2px; transform: rotate(45deg) scale(0.82); }
+
+/* Warm scrollbars */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background-color: #334155;
+  background-color: #d8cfc2;
   border-radius: 9999px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-bg::before,
+  .app-bg::after,
+  .leaflet-overlay-pane path,
+  .hazard-poly--selected,
+  .skeleton::after {
+    animation: none !important;
+  }
 }

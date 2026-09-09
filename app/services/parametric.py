@@ -208,9 +208,14 @@ def update_trigger(trigger_id: int, changes: dict) -> ParametricTrigger:
                 [*fields.values(), trigger_id],
             )
             row = cur.fetchone()
+            if row is None:
+                raise ValueError(f"No parametric_triggers row with id={trigger_id}")
+            # A deactivated rule is never re-evaluated, so its firings would
+            # otherwise linger in the ledger forever. Clear them now so the
+            # ledger stays "what currently pays out".
+            if fields.get("is_active") is False:
+                cur.execute("DELETE FROM trigger_firings WHERE trigger_id = %s", (trigger_id,))
         conn.commit()
-    if row is None:
-        raise ValueError(f"No parametric_triggers row with id={trigger_id}")
     log.info("Updated parametric trigger id=%s fields=%s", trigger_id, sorted(fields))
     return _row_to_trigger(row)
 
@@ -508,6 +513,34 @@ def _row_to_firing(row) -> dict:
         "basis_risk_pct": (payout - modelled) / modelled if modelled > 0 else None,
         "payout_currency": row[16],
         "evaluated_at": row[17].isoformat() if row[17] else None,
+    }
+
+
+def summary() -> dict:
+    """Portfolio-level parametric position, for the dashboard header: how many
+    rules exist / are active, and the outstanding payout and net basis risk
+    across every firing currently in the ledger."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    (SELECT count(*) FROM parametric_triggers),
+                    (SELECT count(*) FROM parametric_triggers WHERE is_active),
+                    (SELECT count(*) FROM trigger_firings),
+                    (SELECT count(DISTINCT hazard_event_id) FROM trigger_firings),
+                    (SELECT COALESCE(sum(payout_amount), 0) FROM trigger_firings),
+                    (SELECT COALESCE(sum(basis_risk), 0) FROM trigger_firings)
+                """
+            )
+            row = cur.fetchone()
+    return {
+        "rule_count": row[0],
+        "active_rule_count": row[1],
+        "firing_count": row[2],
+        "events_with_firings": row[3],
+        "total_outstanding_payout": float(row[4]),
+        "total_basis_risk": float(row[5]),
     }
 
 

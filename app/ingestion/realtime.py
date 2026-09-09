@@ -25,7 +25,6 @@ def run_realtime_poll(settings: Settings | None = None) -> IngestionStats:
                 repo,
                 run_id,
                 features,
-                country_filter=settings.gdacs_country_filter,
                 ingestion_source="EVENTS4APP",
                 fetch_polygons=False,
                 chunk_size=settings.ingest_commit_chunk_size,

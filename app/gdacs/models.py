@@ -44,6 +44,8 @@ class HazardEvent:
 class IngestionStats:
     events_fetched: int = 0
     events_upserted: int = 0
+    # Always 0 since ingestion went global — kept for the ingestion_runs column
+    # and the skip counts recorded by pre-global runs.
     events_skipped: int = 0
     events_failed: int = 0
 

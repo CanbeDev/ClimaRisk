@@ -107,6 +107,11 @@ def _read_or_500(fn, what: str):
         raise HTTPException(status_code=500, detail=f"Database error {what}") from exc
 
 
+@router.get("/summary")
+def get_summary() -> dict[str, Any]:
+    return _read_or_500(parametric.summary, "building parametric summary")
+
+
 @router.get("/triggers")
 def list_triggers(active_only: bool = Query(default=False)) -> dict[str, Any]:
     triggers = _read_or_500(

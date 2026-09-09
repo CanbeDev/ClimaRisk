@@ -1,13 +1,14 @@
-import { AlertTriangle, Building2, DollarSign, Loader2, MapPinOff, Radar, ShieldOff, TrendingDown, Zap } from 'lucide-react'
+import { AlertTriangle, Building2, DollarSign, MapPinOff, Radar, ShieldOff, TrendingDown, Zap } from 'lucide-react'
 import { currency, getHazardColor, percent } from '../lib/theme'
 import AssetTable from './AssetTable'
 import BiCalculator from './BiCalculator'
 import MetricCard from './MetricCard'
+import { SkeletonCard, SkeletonRows } from './Skeleton'
 
 const ALERT_STYLES = {
-  Red: 'border-rose-500/30 bg-rose-500/15 text-rose-400',
-  Orange: 'border-amber-500/30 bg-amber-500/15 text-amber-400',
-  Green: 'border-emerald-500/30 bg-emerald-500/15 text-emerald-400',
+  Red: 'border-pml/30 bg-pml/10 text-pml',
+  Orange: 'border-over/30 bg-over/10 text-over',
+  Green: 'border-ok/30 bg-ok/10 text-ok',
 }
 
 function AlertBadge({ level }) {
@@ -15,7 +16,7 @@ function AlertBadge({ level }) {
   return (
     <span
       className={`rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-        ALERT_STYLES[level] || 'border-slate-500/30 bg-slate-500/15 text-slate-400'
+        ALERT_STYLES[level] || 'border-hair bg-sunken text-muted'
       }`}
     >
       {level} alert
@@ -26,8 +27,8 @@ function AlertBadge({ level }) {
 function EmptyState() {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-      <Radar className="h-10 w-10 text-slate-700" />
-      <div className="max-w-xs text-sm text-slate-500">
+      <Radar className="h-10 w-10 text-faint" />
+      <div className="max-w-xs text-sm text-muted">
         Select a hazard event on the map to view its underwriting exposure.
       </div>
     </div>
@@ -43,16 +44,16 @@ export default function ExposurePanel({ selectedHazardMeta, intersection, loadin
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
-      <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+      <div className="panel rounded-lg p-4">
         <div className="flex items-center gap-2">
           <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color.stroke }} />
-          <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">{color.label}</span>
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted">{color.label}</span>
           <AlertBadge level={selectedHazardMeta.alert_level} />
         </div>
-        <h2 className="mt-1.5 text-lg font-semibold leading-tight text-slate-100">
+        <h2 className="mt-1.5 text-lg font-semibold leading-tight text-ink">
           {selectedHazardMeta.event_name || `${selectedHazardMeta.event_type} ${selectedHazardMeta.event_id}`}
         </h2>
-        <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
+        <div className="mt-1 flex items-center gap-2 text-xs text-muted">
           <span>
             {selectedHazardMeta.from_date
               ? new Date(selectedHazardMeta.from_date).toLocaleDateString('en-ZA', {
@@ -63,26 +64,30 @@ export default function ExposurePanel({ selectedHazardMeta, intersection, loadin
               : 'Date unknown'}
           </span>
           <span>•</span>
-          <span className={selectedHazardMeta.has_footprint ? 'text-emerald-500' : 'text-amber-500'}>
+          <span className={selectedHazardMeta.has_footprint ? 'text-ok' : 'text-over'}>
             {selectedHazardMeta.has_footprint ? 'Footprint mapped' : 'Point only — no footprint yet'}
           </span>
         </div>
       </div>
 
       {loading && (
-        <div className="flex flex-1 items-center justify-center gap-2 text-sm text-slate-500">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Computing spatial exposure…
-        </div>
+        <>
+          <SkeletonCard hero />
+          <div className="grid grid-cols-2 gap-3">
+            <SkeletonCard />
+            <SkeletonCard />
+          </div>
+          <SkeletonRows rows={4} />
+        </>
       )}
 
       {error && !loading && (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 text-center">
-          <AlertTriangle className="h-8 w-8 text-rose-500" />
-          <div className="text-sm text-slate-400">{error}</div>
+          <AlertTriangle className="h-8 w-8 text-pml" />
+          <div className="text-sm text-muted">{error}</div>
           <button
             onClick={onRetry}
-            className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+            className="rounded border border-hair px-3 py-1.5 text-xs text-ink hover:bg-sunken"
           >
             Retry
           </button>
@@ -91,19 +96,26 @@ export default function ExposurePanel({ selectedHazardMeta, intersection, loadin
 
       {intersection && !loading && !error && (
         <>
-          <div className="grid grid-cols-3 gap-3">
-            <MetricCard icon={Building2} label="Assets" value={intersection.asset_count} />
+          <MetricCard
+            icon={DollarSign}
+            label="TIV at risk"
+            amount={intersection.total_insured_value}
+            format={currency}
+            hero
+          />
+          <div className="grid grid-cols-2 gap-3">
             <MetricCard
-              icon={DollarSign}
-              label="TIV at risk"
-              value={currency(intersection.total_insured_value)}
-              accent="text-cyan-400"
+              icon={Building2}
+              label="Assets"
+              amount={intersection.asset_count}
+              format={(n) => Math.round(n).toString()}
             />
             <MetricCard
               icon={Zap}
               label="Daily net revenue"
-              value={currency(intersection.total_daily_net_revenue)}
-              accent="text-amber-400"
+              amount={intersection.total_daily_net_revenue}
+              format={currency}
+              accent="text-over"
             />
           </div>
 
@@ -113,17 +125,19 @@ export default function ExposurePanel({ selectedHazardMeta, intersection, loadin
                 <MetricCard
                   icon={TrendingDown}
                   label={`PML (${percent(intersection.damage_ratio)} damage ratio)`}
-                  value={currency(intersection.probable_maximum_loss)}
-                  accent="text-rose-400"
+                  amount={intersection.probable_maximum_loss}
+                  format={currency}
+                  accent="text-pml"
                 />
                 <MetricCard
                   icon={ShieldOff}
                   label={`Protection gap (${percent(intersection.protection_gap_pct)})`}
-                  value={currency(intersection.protection_gap)}
-                  accent="text-orange-400"
+                  amount={intersection.protection_gap}
+                  format={currency}
+                  accent="text-gap"
                 />
               </div>
-              <div className="text-[10px] leading-relaxed text-slate-600">
+              <div className="text-[10px] leading-relaxed text-faint">
                 PML = TIV at risk × a HAZUS-MH/FEMA band midpoint for this hazard type and GDACS alert
                 level — a documented approximation, not a per-event vulnerability assessment. Protection
                 gap assumes an asset with no declared insured value is fully uninsured.
@@ -132,9 +146,9 @@ export default function ExposurePanel({ selectedHazardMeta, intersection, loadin
           )}
 
           {intersection.asset_count === 0 ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-slate-800 px-6 py-8 text-center">
-              <MapPinOff className="h-6 w-6 text-slate-700" />
-              <div className="text-sm text-slate-500">No insured assets fall within this event's footprint.</div>
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-hair px-6 py-8 text-center">
+              <MapPinOff className="h-6 w-6 text-faint" />
+              <div className="text-sm text-muted">No insured assets fall within this event's footprint.</div>
             </div>
           ) : (
             <>

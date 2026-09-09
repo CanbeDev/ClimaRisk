@@ -32,7 +32,6 @@ def run_backfill(
             metadata={
                 "from_date": from_date.isoformat(),
                 "to_date": to_date.isoformat(),
-                "country": settings.gdacs_country_filter,
             },
         )
 
@@ -41,7 +40,6 @@ def run_backfill(
                 features = client.search_events(
                     from_date=from_date.isoformat(),
                     to_date=to_date.isoformat(),
-                    country=settings.gdacs_country_filter,
                     event_list=settings.gdacs_event_types,
                     page_number=page_number,
                 )
@@ -52,7 +50,6 @@ def run_backfill(
                     repo,
                     run_id,
                     features,
-                    country_filter=settings.gdacs_country_filter,
                     ingestion_source="SEARCH",
                     fetch_polygons=False,
                     chunk_size=settings.ingest_commit_chunk_size,
