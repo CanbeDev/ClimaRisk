@@ -49,6 +49,7 @@ def get_hazard_trends() -> dict[str, Any]:
                 "has_footprint": p.has_footprint,
                 "asset_count": p.asset_count,
                 "tiv_at_risk": p.tiv_at_risk,
+                "avg_proximity_score": p.avg_proximity_score,
                 "damage_ratio": p.damage_ratio,
                 "probable_maximum_loss": p.probable_maximum_loss,
                 "declared_insured_value": p.declared_insured_value,

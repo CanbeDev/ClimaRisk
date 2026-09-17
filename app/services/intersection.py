@@ -16,7 +16,8 @@ from typing import Optional
 
 from app.config import Settings, get_settings
 from app.db.pool import get_connection
-from app.services.damage_ratio import get_damage_ratio
+from app.services.compounding import COMPOUND_WINDOW_DAYS, compound_multiplier
+from app.services.damage_ratio import compute_pml, get_damage_ratio
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +34,25 @@ class ExposedAsset:
     daily_net_revenue: Optional[float]
     variable_cost_ratio: Optional[float]
     insured_value: Optional[float]
+    # Distance geometry (Step 0), relative to the one footprint this asset was
+    # matched against — see _fetch_intersecting_assets for how both are derived
+    # from the same GiST-bound subquery, no second spatial pass.
+    distance_to_edge: float
+    proximity_score: float
+    # Multi-hazard compounding (Step 3): 1.0 for an asset with no prior hit
+    # inside COMPOUND_WINDOW_DAYS before this event; > 1.0 (compounded) when
+    # this same asset was already hit by another footprint-bearing event in
+    # that window. Per-asset, not per-event — a sibling asset in the same
+    # footprint can be a first-time hit while this one compounds.
+    compound_multiplier: float
+    is_compound_loss: bool
+    # The hazard this asset was intersected against — carried per-asset (not
+    # just on the parent IntersectionResult) so damage_ratio/probable_maximum_loss
+    # below are self-contained: each asset's ratio depends on its own
+    # proximity_score, so it can differ from a sibling asset hit by the same
+    # event.
+    event_type: str
+    alert_level: Optional[str]
 
     @property
     def contribution_margin(self) -> Optional[float]:
@@ -40,6 +60,25 @@ class ExposedAsset:
         if self.daily_net_revenue is None or self.variable_cost_ratio is None:
             return None
         return self.daily_net_revenue * self.variable_cost_ratio
+
+    @property
+    def damage_ratio(self) -> float:
+        """This asset's own fully-adjusted ratio: distance-decay (Section 4.3,
+        Step 1) interpolated from its own `proximity_score`, then Step 3's
+        compounding multiplier layered on top and capped at 1.0 — so two
+        assets exposed to the same event can carry different ratios both from
+        where they sit *and* from whether either has been hit before."""
+        base = get_damage_ratio(self.event_type, self.alert_level, self.proximity_score)
+        return min(1.0, base * self.compound_multiplier)
+
+    @property
+    def probable_maximum_loss(self) -> float:
+        """TIV x this asset's own (distance-decay + compounding) ratio —
+        deliberately *not* `compute_pml()` directly, since that shared helper
+        (also used by trends.py, which has no per-asset compounding data) only
+        knows about distance decay. Compounding is layered on here, at the
+        one place that has the per-asset history to know about it."""
+        return self.total_insured_value * self.damage_ratio
 
 
 @dataclass
@@ -52,7 +91,6 @@ class IntersectionResult:
     from_date: Optional[datetime]
     has_footprint: bool
     alert_level: Optional[str] = None
-    damage_ratio: float = 0.0
     assets: list[ExposedAsset] = field(default_factory=list)
 
     @property
@@ -72,8 +110,21 @@ class IntersectionResult:
 
     @property
     def probable_maximum_loss(self) -> float:
-        """PML = Exposure at Risk x Damage Ratio (Section 4.3)."""
-        return self.total_insured_value * self.damage_ratio
+        """PML = Σ each exposed asset's own PML (Section 4.3), each computed
+        with that asset's distance-decay ratio — not TIV x one event-wide
+        ratio, since Step 1 made the ratio position-dependent."""
+        return sum(a.probable_maximum_loss for a in self.assets)
+
+    @property
+    def damage_ratio(self) -> float:
+        """TIV-weighted *effective* ratio implied by probable_maximum_loss —
+        kept so `probable_maximum_loss == total_insured_value * damage_ratio`
+        still holds as a whole-event figure, even though the real, position-
+        dependent ratio now varies per asset (see ExposedAsset.damage_ratio).
+        0.0 when there's no exposure to weight, matching the "empty, not an
+        error" contract elsewhere on this result."""
+        tiv = self.total_insured_value
+        return self.probable_maximum_loss / tiv if tiv > 0 else 0.0
 
     @property
     def total_declared_insured_value(self) -> float:
@@ -124,20 +175,81 @@ def _fetch_hazard_header(conn, hazard_event_id: int) -> Optional[dict]:
     }
 
 
-def _fetch_intersecting_assets(conn, hazard_event_id: int) -> list[ExposedAsset]:
+def _fetch_intersecting_assets(
+    conn,
+    hazard_event_id: int,
+    event_type: str,
+    alert_level: Optional[str],
+) -> list[ExposedAsset]:
+    """Assets intersecting one hazard's footprint, plus (Step 0) each asset's
+    distance geometry relative to that same footprint:
+
+      * `distance_to_edge` — ST_Distance in metres (::geography, so it's a
+        real-world figure) between the asset and the footprint's boundary,
+        negated for an asset strictly inside (ST_Contains) so "inside" reads
+        as negative/zero and there is no positive case here — every row in
+        this result already passed ST_Intersects, so "outside" never occurs.
+      * `proximity_score` — 1.0 at the footprint's centroid, 0.0 at its edge,
+        radius-normalised against the centroid's farthest boundary point
+        (`ST_MaxDistance`). Computed in plain (SRID 4326) geometry space, not
+        ::geography — ST_MaxDistance has no geography variant, but since this
+        is a ratio of two distances measured the same way, the degree-based
+        unit cancels out; that stops being a fair approximation only for a
+        footprint spanning a large share of the globe, which a single hazard
+        event's polygon does not. GEOMETRYCOLLECTION footprints (a possible
+        `make_valid()` repair output) leave ST_Boundary undefined, so this
+        COALESCEs to a neutral 0.5 rather than failing the whole request.
+
+    A third figure, `prior_hit_count` (Step 3), counts — for each of these
+    same assets — how many *other* footprint-bearing events already
+    intersected that specific asset within `COMPOUND_WINDOW_DAYS` before this
+    event's `from_date`. It's a correlated subquery per asset row rather than
+    a second round trip: the asset set here is already small (one footprint's
+    worth), and computing it in Python would mean re-fetching every other
+    candidate event's footprint anyway. A NULL `from_date` on this event (no
+    anchor for "before") yields 0 prior hits rather than erroring.
+
+    All three ride on the same GiST-bound subquery `assets vs. this one
+    footprint` the intersection itself already uses (via the `hz` CTE below,
+    which the planner treats as the same single bound geometry as the old
+    scalar subquery) — no second spatial pass, no new index.
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
+            WITH hz AS (
+                SELECT footprint, from_date,
+                       ST_Centroid(footprint) AS centroid,
+                       ST_Boundary(footprint) AS boundary
+                FROM hazard_events WHERE id = %s
+            )
             SELECT a.id, a.asset_name, a.asset_type, a.iso3,
                    a.building_value, a.contents_value, a.total_insured_value,
-                   a.daily_net_revenue, a.variable_cost_ratio, a.insured_value
-            FROM assets a
-            WHERE ST_Intersects(
-                a.location,
-                (SELECT footprint FROM hazard_events WHERE id = %s)
-            )
+                   a.daily_net_revenue, a.variable_cost_ratio, a.insured_value,
+                   (CASE WHEN ST_Contains(hz.footprint, a.location) THEN -1 ELSE 1 END)
+                       * COALESCE(ST_Distance(a.location::geography, hz.boundary::geography), 0)
+                       AS distance_to_edge,
+                   COALESCE(
+                       GREATEST(0.0, LEAST(1.0,
+                           1.0 - ST_Distance(a.location, hz.centroid)
+                                 / NULLIF(ST_MaxDistance(hz.centroid, hz.boundary), 0)
+                       )),
+                       0.5
+                   ) AS proximity_score,
+                   (
+                       CASE WHEN hz.from_date IS NULL THEN 0 ELSE (
+                           SELECT COUNT(*) FROM hazard_events h2
+                           WHERE h2.id != %s
+                             AND h2.footprint IS NOT NULL
+                             AND ST_Intersects(a.location, h2.footprint)
+                             AND h2.from_date >= hz.from_date - (%s * INTERVAL '1 day')
+                             AND h2.from_date < hz.from_date
+                       ) END
+                   ) AS prior_hit_count
+            FROM assets a, hz
+            WHERE ST_Intersects(a.location, hz.footprint)
             """,
-            (hazard_event_id,),
+            (hazard_event_id, hazard_event_id, COMPOUND_WINDOW_DAYS),
         )
         rows = cur.fetchall()
 
@@ -153,6 +265,12 @@ def _fetch_intersecting_assets(conn, hazard_event_id: int) -> list[ExposedAsset]
             daily_net_revenue=float(row[7]) if row[7] is not None else None,
             variable_cost_ratio=float(row[8]) if row[8] is not None else None,
             insured_value=float(row[9]) if row[9] is not None else None,
+            distance_to_edge=float(row[10]) if row[10] is not None else 0.0,
+            proximity_score=float(row[11]) if row[11] is not None else 0.5,
+            compound_multiplier=compound_multiplier(row[12] or 0),
+            is_compound_loss=bool(row[12]) and row[12] > 0,
+            event_type=event_type,
+            alert_level=alert_level,
         )
         for row in rows
     ]
@@ -187,7 +305,9 @@ def run_intersection(
             )
             assets: list[ExposedAsset] = []
         else:
-            assets = _fetch_intersecting_assets(conn, hazard_event_id)
+            assets = _fetch_intersecting_assets(
+                conn, hazard_event_id, header["event_type"], header["alert_level"]
+            )
 
     result = IntersectionResult(
         hazard_event_id=header["id"],
@@ -198,7 +318,6 @@ def run_intersection(
         from_date=header["from_date"],
         has_footprint=header["has_footprint"],
         alert_level=header["alert_level"],
-        damage_ratio=get_damage_ratio(header["event_type"], header["alert_level"]),
         assets=assets,
     )
 
@@ -253,7 +372,8 @@ def main() -> int:
     for asset in result.assets:
         print(
             f"  - [{asset.id}] {asset.asset_name or '(unnamed)'} "
-            f"({asset.asset_type or 'n/a'}) TIV={asset.total_insured_value:,.2f}"
+            f"({asset.asset_type or 'n/a'}) TIV={asset.total_insured_value:,.2f} "
+            f"proximity={asset.proximity_score:.2f} ratio={asset.damage_ratio:.0%}"
         )
 
     return 0

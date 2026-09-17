@@ -28,8 +28,17 @@ from typing import Optional
 
 from app.config import Settings, get_settings
 from app.db.pool import get_connection
+from app.services.compounding import COMPOUND_WINDOW_DAYS
+from app.services.intersection import run_intersection
 from app.services.parametric import summary as parametric_summary
-from app.services.trends import HazardTrendPoint, run_hazard_trends
+from app.services.trends import (
+    GRID_CELL_SIZE_DEGREES,
+    MAX_CONCENTRATION_PENALTY,
+    ConcentrationResult,
+    HazardTrendPoint,
+    compute_concentration_index,
+    run_hazard_trends,
+)
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +69,19 @@ class DisclosureReport:
     distinct_assets_exposed: int = 0
     distinct_tiv_exposed: float = 0.0
 
+    # Step 3: Σ PML contributed by assets already hit by another
+    # footprint-bearing event within the compounding window, across every
+    # event in the period. Computed eagerly in build_disclosure_report() (it
+    # needs per-asset detail run_hazard_trends()'s grouped join doesn't carry),
+    # not a lazy property like the other aggregates below.
+    compound_pml_contribution: float = 0.0
+
+    # Step 4: portfolio-level (not period-scoped) accumulation-risk summary —
+    # see app/services/trends.py:ConcentrationResult for the grid/index derivation.
+    concentration: ConcentrationResult = field(
+        default_factory=lambda: ConcentrationResult(0, 0.0, 0.0)
+    )
+
     # Parametric position (current, not period-scoped — it's a live ledger)
     parametric: dict = field(default_factory=dict)
 
@@ -82,6 +104,32 @@ class DisclosureReport:
     @property
     def gross_pml(self) -> float:
         return sum(e.probable_maximum_loss for e in self.events)
+
+    @property
+    def compound_pml_pct(self) -> Optional[float]:
+        """Share of gross period PML attributable to assets already hit by
+        another event within the compounding window (Step 3,
+        app/services/compounding.py) — computed against `gross_pml`, the
+        same (non-deduplicated) denominator this report already uses for its
+        other "share of period PML" figures, for consistency with them.
+        None when there's no PML to divide by, not a fabricated 0 — the same
+        "undefined, not zero" contract `protection_gap_pct` and
+        `vertical_basis_risk_pct` already use elsewhere."""
+        total = self.gross_pml
+        if total <= 0:
+            return None
+        return self.compound_pml_contribution / total
+
+    @property
+    def diversification_adjusted_pml(self) -> float:
+        """gross_pml loaded up by the portfolio's concentration-in-hazard-
+        dense-cells penalty (Step 4) — an adjustment layered *on top of*
+        gross_pml, not a replacement for it, `distinct_tiv_exposed`, or any
+        other PML figure already on this report: all of them stay visible
+        side by side, labelled, the same "state the method, don't just show
+        one flattering number" pattern this report already uses for gross vs.
+        distinct exposure."""
+        return self.gross_pml * (1 + self.concentration.penalty)
 
     @property
     def peak_event_pml(self) -> Optional[HazardTrendPoint]:
@@ -127,6 +175,11 @@ class DisclosureReport:
                 "gross_tiv_at_risk": self.gross_tiv_at_risk,
                 "gross_probable_maximum_loss": self.gross_pml,
                 "protection_gap_on_distinct_exposed": self.protection_gap_on_distinct,
+                "compound_pml_contribution": self.compound_pml_contribution,
+                "compound_pml_pct": self.compound_pml_pct,
+                "concentration_index": self.concentration.weighted_concentration_index,
+                "concentration_penalty": self.concentration.penalty,
+                "diversification_adjusted_pml": self.diversification_adjusted_pml,
                 "peak_event": (
                     {
                         "hazard_event_id": self.peak_event_pml.hazard_event_id,
@@ -237,6 +290,28 @@ def build_disclosure_report(
         if e.from_date is not None and period_start <= e.from_date.date() <= period_end
     ]
 
+    # Step 3's compound-exposure aggregate needs per-asset detail
+    # run_hazard_trends()'s grouped join doesn't carry (compounding is a
+    # property of one specific asset's hit history, not something a GROUP BY
+    # over the whole period can cheaply reproduce without re-deriving
+    # intersection.py's per-asset logic as one much heavier query). Looping
+    # run_intersection() per period event is the one deliberate exception to
+    # this codebase's "no N+1" rule for hazard-event queries: a disclosure
+    # report is a periodic, non-interactive document already assembled from
+    # several separate queries, not a per-request dashboard load, so trading
+    # a few extra round trips for reusing an already-correct function is the
+    # better trade than a second, parallel compounding implementation in SQL.
+    compound_pml_contribution = 0.0
+    for e in events:
+        if e.asset_count == 0:
+            continue
+        event_intersection = run_intersection(e.hazard_event_id, settings=settings)
+        compound_pml_contribution += sum(
+            a.probable_maximum_loss for a in event_intersection.assets if a.is_compound_loss
+        )
+
+    concentration = compute_concentration_index(settings=settings)
+
     report = DisclosureReport(
         org_name=settings.report_org_name,
         iso3=country,
@@ -250,6 +325,8 @@ def build_disclosure_report(
         events=events,
         distinct_assets_exposed=distinct_count,
         distinct_tiv_exposed=float(distinct_tiv),
+        compound_pml_contribution=compound_pml_contribution,
+        concentration=concentration,
         parametric=parametric_summary(),
     )
     log.info(
@@ -300,6 +377,25 @@ _METHODOLOGY = [
         "Parametric basis risk",
         "Basis risk is the parametric payout minus the modelled PML above — there is no "
         "ground-truth loss feed to calibrate against.",
+    ),
+    (
+        "Compound exposure",
+        f"An asset already hit by another footprint-bearing event within the last "
+        f"{COMPOUND_WINDOW_DAYS} days gets a compounding multiplier on its damage "
+        "ratio for this event (capped at 100% of TIV) — a documented placeholder "
+        "escalation, not a calibrated recovery curve per asset type or hazard. The "
+        "percentage above is gross PML from compound-loss assets over gross period "
+        "PML, using the same non-deduplicated denominator as the other gross "
+        "figures on this page.",
+    ),
+    (
+        "Concentration / accumulation risk",
+        f"A {GRID_CELL_SIZE_DEGREES:.0f}° grid over South Africa's bounding box scores each "
+        "cell's historical hazard density (share of all footprint-bearing events that have ever "
+        "touched it) against the portfolio's TIV share sitting in it. diversification_adjusted_pml "
+        f"loads gross PML up by a penalty, capped at {MAX_CONCENTRATION_PENALTY:.0%}, proportional "
+        "to how much TIV sits concentrated in historically hazard-dense cells — a documented "
+        "placeholder loading, not a calibrated catastrophe-model accumulation charge.",
     ),
     (
         "Hazard footprints",
@@ -391,6 +487,8 @@ def render_html(report: DisclosureReport) -> str:
   <div class="card"><div class="k">Distinct assets exposed</div><div class="v">{report.distinct_assets_exposed}</div></div>
   <div class="card"><div class="k">Distinct TIV exposed</div><div class="v">{_zar(report.distinct_tiv_exposed)}</div></div>
   <div class="card"><div class="k">Est. protection gap (exposed)</div><div class="v">{_zar(report.protection_gap_on_distinct)}</div></div>
+  <div class="card"><div class="k">Compound-exposure share of PML</div><div class="v">{_pct(report.compound_pml_pct)}</div></div>
+  <div class="card"><div class="k">Diversification-adjusted PML</div><div class="v">{_zar(report.diversification_adjusted_pml)}</div></div>
 </div>
 <p class="note">"Distinct" figures de-duplicate assets hit by more than one event.
    Peak single-event PML:

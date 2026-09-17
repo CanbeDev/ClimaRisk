@@ -59,6 +59,12 @@ def get_exposure_intersection(hazard_event_id: int) -> dict[str, Any]:
                 "daily_net_revenue": asset.daily_net_revenue,
                 "variable_cost_ratio": asset.variable_cost_ratio,
                 "contribution_margin": asset.contribution_margin,
+                "distance_to_edge": asset.distance_to_edge,
+                "proximity_score": asset.proximity_score,
+                "compound_multiplier": asset.compound_multiplier,
+                "is_compound_loss": asset.is_compound_loss,
+                "damage_ratio": asset.damage_ratio,
+                "probable_maximum_loss": asset.probable_maximum_loss,
             }
             for asset in result.assets
         ],
