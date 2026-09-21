@@ -106,13 +106,19 @@ _TREND_QUERY = """
            COALESCE(SUM(a.insured_value), 0) AS declared_insured_value,
            COALESCE(
                SUM(
-                   a.total_insured_value * COALESCE(
-                       GREATEST(0.0, LEAST(1.0,
-                           1.0 - ST_Distance(a.location, ST_Centroid(h.footprint))
-                                 / NULLIF(ST_MaxDistance(ST_Centroid(h.footprint), ST_Boundary(h.footprint)), 0)
-                       )),
-                       0.5
-                   )
+                   a.total_insured_value * CASE
+                       -- Explicit NULL check, not COALESCE(GREATEST(...), 0.5):
+                       -- GREATEST/LEAST ignore NULL arguments rather than
+                       -- propagating them, so that form silently resolves to
+                       -- 1.0 (not the intended 0.5) for a NULL max_extent
+                       -- (GEOMETRYCOLLECTION boundary, or a degenerate
+                       -- zero-extent footprint) -- see intersection.py's
+                       -- _fetch_intersecting_assets for the same fix.
+                       WHEN hz.max_extent IS NULL THEN 0.5
+                       ELSE GREATEST(0.0, LEAST(1.0,
+                           1.0 - ST_Distance(a.location, hz.centroid) / hz.max_extent
+                       ))
+                   END
                ) / NULLIF(SUM(a.total_insured_value), 0),
                0
            ) AS avg_proximity_score
@@ -120,6 +126,10 @@ _TREND_QUERY = """
     LEFT JOIN assets a
         ON h.footprint IS NOT NULL
         AND ST_Intersects(a.location, h.footprint)
+    LEFT JOIN LATERAL (
+        SELECT ST_Centroid(h.footprint) AS centroid,
+               NULLIF(ST_MaxDistance(ST_Centroid(h.footprint), ST_Boundary(h.footprint)), 0) AS max_extent
+    ) hz ON true
     WHERE h.iso3 = %s OR %s = ANY(h.affected_countries)
     GROUP BY h.id
     ORDER BY h.from_date ASC NULLS LAST

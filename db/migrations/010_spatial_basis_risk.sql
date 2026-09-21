@@ -14,10 +14,10 @@
 --
 --   spatial_basis_risk_pct — tiv_share/per_asset payouts only: how much of
 --     the gap between a position-blind ("naive") sizing and the real,
---     distance-decayed loss (migration-less, Step 1's app-layer change) is
---     attributable to *where* the exposed assets sit rather than how much
---     TIV they carry in aggregate. NULL for fixed payouts (nothing spatial
---     in a flat amount) and whenever it isn't computable.
+--     distance-decayed loss (the app-layer change from Step 1, no migration
+--     of its own) is attributable to *where* the exposed assets sit rather
+--     than how much TIV they carry in aggregate. NULL for fixed payouts
+--     (nothing spatial in a flat amount) and whenever it isn't computable.
 --
 -- See app/services/parametric.py's TriggerEvaluation / _spatial_basis_risk_pct
 -- docstrings for the exact derivation of both.

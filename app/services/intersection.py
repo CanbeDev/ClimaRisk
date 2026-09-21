@@ -217,11 +217,16 @@ def _fetch_intersecting_assets(
     with conn.cursor() as cur:
         cur.execute(
             """
-            WITH hz AS (
+            WITH hz0 AS (
                 SELECT footprint, from_date,
                        ST_Centroid(footprint) AS centroid,
                        ST_Boundary(footprint) AS boundary
                 FROM hazard_events WHERE id = %s
+            ),
+            hz AS (
+                SELECT footprint, from_date, centroid, boundary,
+                       NULLIF(ST_MaxDistance(centroid, boundary), 0) AS max_extent
+                FROM hz0
             )
             SELECT a.id, a.asset_name, a.asset_type, a.iso3,
                    a.building_value, a.contents_value, a.total_insured_value,
@@ -229,13 +234,18 @@ def _fetch_intersecting_assets(
                    (CASE WHEN ST_Contains(hz.footprint, a.location) THEN -1 ELSE 1 END)
                        * COALESCE(ST_Distance(a.location::geography, hz.boundary::geography), 0)
                        AS distance_to_edge,
-                   COALESCE(
-                       GREATEST(0.0, LEAST(1.0,
-                           1.0 - ST_Distance(a.location, hz.centroid)
-                                 / NULLIF(ST_MaxDistance(hz.centroid, hz.boundary), 0)
-                       )),
-                       0.5
-                   ) AS proximity_score,
+                   -- NB: this must be an explicit NULL check, not
+                   -- COALESCE(GREATEST(...), 0.5) -- GREATEST/LEAST ignore
+                   -- NULL arguments rather than propagating them, so that
+                   -- form silently resolves to 1.0 for a NULL max_extent
+                   -- (GEOMETRYCOLLECTION boundary, or a degenerate
+                   -- zero-extent footprint) and the 0.5 fallback never fires.
+                   CASE
+                       WHEN hz.max_extent IS NULL THEN 0.5
+                       ELSE GREATEST(0.0, LEAST(1.0,
+                           1.0 - ST_Distance(a.location, hz.centroid) / hz.max_extent
+                       ))
+                   END AS proximity_score,
                    (
                        CASE WHEN hz.from_date IS NULL THEN 0 ELSE (
                            SELECT COUNT(*) FROM hazard_events h2

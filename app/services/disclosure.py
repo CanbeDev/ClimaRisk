@@ -362,10 +362,11 @@ _ALERT_BADGE = {"Red": "#f43f5e", "Orange": "#f59e0b", "Green": "#22c55e"}
 _METHODOLOGY = [
     (
         "Damage ratio / PML",
-        "Probable Maximum Loss is Exposure-at-Risk × a HAZUS-MH / FEMA depth-damage band "
-        "midpoint selected by GDACS alert level (Green/Orange/Red), not hazard-specific "
-        "severity (flood depth, cyclone category). It is a screening estimate, not a "
-        "calibrated vulnerability model.",
+        "Probable Maximum Loss is Exposure-at-Risk × a HAZUS-MH / FEMA depth-damage band, "
+        "selected by GDACS alert level (Green/Orange/Red) and interpolated within that band "
+        "by each asset's distance from the hazard footprint's centroid — not hazard-specific "
+        "severity (flood depth, cyclone category), which GDACS doesn't expose. It is a "
+        "screening estimate, not a calibrated vulnerability model.",
     ),
     (
         "Protection gap",

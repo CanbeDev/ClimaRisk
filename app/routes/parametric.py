@@ -91,8 +91,10 @@ def _evaluation_dict(e: parametric.TriggerEvaluation) -> dict[str, Any]:
         "exposed_tiv": e.exposed_tiv,
         "modelled_loss": e.modelled_loss,
         "payout_amount": e.payout_amount,
-        "basis_risk": e.basis_risk,
-        "basis_risk_pct": e.basis_risk_pct,
+        "vertical_basis_risk": e.vertical_basis_risk,
+        "vertical_basis_risk_pct": e.vertical_basis_risk_pct,
+        "horizontal_basis_risk_flag": e.horizontal_basis_risk_flag,
+        "spatial_basis_risk_pct": e.spatial_basis_risk_pct,
         "payout_currency": e.payout_currency,
     }
 
