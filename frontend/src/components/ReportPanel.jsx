@@ -65,6 +65,16 @@ export default function ReportPanel({ report, loading, error, onReload }) {
       value: peak ? compactCurrency(peak.probable_maximum_loss) : '—',
       accent: 'text-pml',
     },
+    {
+      label: 'Compound-exposure share of PML',
+      value: hx.compound_pml_pct == null ? '—' : percent(hx.compound_pml_pct),
+      accent: 'text-pml',
+    },
+    {
+      label: 'Diversification-adjusted PML',
+      value: compactCurrency(hx.diversification_adjusted_pml),
+      accent: 'text-pml',
+    },
   ]
 
   return (
@@ -177,7 +187,11 @@ export default function ReportPanel({ report, loading, error, onReload }) {
           <div className="border-t border-hair px-3 py-2 text-[10px] leading-relaxed text-faint">
             Gross Σ across events (double-counts assets hit more than once): TIV at risk{' '}
             {currency(hx.gross_tiv_at_risk)}, PML {currency(hx.gross_probable_maximum_loss)}. The
-            masthead figures above de-duplicate.
+            masthead figures above de-duplicate. Compound-exposure share is gross PML from assets
+            already hit by another event within the compounding window, over gross PML.
+            Diversification-adjusted PML loads gross PML by a penalty proportional to how much
+            portfolio TIV sits concentrated in historically hazard-dense grid cells — an
+            adjustment on top of gross PML, not a replacement for it.
           </div>
         </div>
       </div>

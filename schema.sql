@@ -10,3 +10,4 @@
 \i db/migrations/007_insured_value.sql
 \i db/migrations/008_parametric_triggers.sql
 \i db/migrations/009_global_events.sql
+\i db/migrations/010_spatial_basis_risk.sql

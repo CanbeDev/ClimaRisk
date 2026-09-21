@@ -330,6 +330,127 @@ the distinct exposed book and says so — a disclosure report has to be honest a
 arithmetic. The methodology section spells out the damage-ratio approximation, the gap and
 basis-risk caveats, and the footprint / single-country scope limits.
 
+### Geo-financial risk extensions
+
+Four additions on top of the Phase 1–3 chain, each building on the geometry the previous one
+introduced: per-asset distance decay (Step 0/1), spatial basis-risk decomposition (Step 2),
+multi-hazard compounding (Step 3), and portfolio-level concentration risk (Step 4). None of
+these change the shape of the build order above — they refine the numbers Steps 3–8 already
+compute, the same way `insured_value`/Protection Gap refined Step 2's asset model in place.
+
+**Distance-decay damage ratio replaces the band midpoint with per-asset interpolation.**
+[`get_damage_ratio()`](../app/services/damage_ratio.py) took `(event_type, alert_level)` and
+always returned a band's midpoint; it now takes a third argument, `proximity_score`, and
+interpolates `ratio = low + (high - low) * proximity_score` within the same HAZUS-MH/FEMA bands.
+`proximity_score` (1.0 at a footprint's centroid, 0.0 at its edge, radius-normalised against the
+centroid's farthest boundary point via `ST_MaxDistance`) is computed per asset in
+[`_fetch_intersecting_assets()`](../app/services/intersection.py) alongside a signed
+`distance_to_edge` (metres, `::geography`, negative for an asset strictly inside) — both ride the
+same GiST-bound subquery the intersection already runs, no second spatial pass, no new index.
+This is a documented trade of one simplification for a closer one: the master document's own
+"calibrate within a band rather than always using the midpoint" intent, done by distance from the
+hazard's center rather than by physical severity (flood depth, cyclone category) GDACS still
+doesn't expose. `ExposedAsset.damage_ratio`/`probable_maximum_loss` are now per-asset properties —
+two assets hit by the same event can carry different ratios — and `IntersectionResult.damage_ratio`
+becomes a *derived*, TIV-weighted effective ratio (`probable_maximum_loss / total_insured_value`)
+kept specifically so `PML == TIV × damage_ratio` still holds as a whole-event identity, even
+though the real, position-dependent ratio now lives one level down.
+
+**One shared `compute_pml()` helper, not two hand-written copies.** `trends.py` and
+`intersection.py` used to each spell out `tiv * damage_ratio` themselves — flagged as a known
+drift risk before this pass, now genuinely closed: both call
+[`compute_pml()`](../app/services/damage_ratio.py). `trends.py` can't afford a per-asset Python
+loop (its whole design is one grouped SQL round trip for every event in a country's history), so
+its query computes a **TIV-weighted average** `proximity_score` per event group in SQL and calls
+`compute_pml()` once per event with that average. Because the ratio formula is *linear* in
+`proximity_score` and every asset behind one event shares the same band, `Σ tiv_i × ratio(p_i)`
+and `TIV_total × ratio(weighted_avg(p_i))` are the same number, not an approximation of each
+other — the algebra is spelled out in `HazardTrendPoint.probable_maximum_loss`'s docstring, and
+[`test_disclosure_pml_matches_intersection_service`](../tests/test_disclosure.py) is the
+regression guard that would catch the two ever disagreeing again.
+
+**Spatial basis risk decomposition replaces one signed number with three orthogonal ones.**
+[`parametric.py`](../app/services/parametric.py)'s `basis_risk = payout − modelled_loss` became
+`TriggerEvaluation`'s `vertical_basis_risk` (the same magnitude gap, renamed as one component of
+three) plus two additions migration `010` persists on `trigger_firings`:
+
+- `horizontal_basis_risk_flag` — a *kind* mismatch, not a magnitude one: true when a `fixed`
+  payout fired against zero exposed assets (an index paid out with nothing underneath it), or
+  when real exposure existed but this specific rule stayed silent (a coverage gap its own
+  conditions didn't catch). Computed for every evaluation, fired or not, since a silent rule
+  sitting on real exposure is exactly what a coverage review needs surfaced.
+- `spatial_basis_risk_pct` — for `tiv_share`/`per_asset` payouts only (a `fixed` amount has
+  nothing spatial in its sizing to critique). Both payout kinds size off a flat TIV sum or asset
+  count, as if severity didn't depend on *which* asset carries the value — the naive assumption
+  this exposes is the group's **simple** (unweighted) average `proximity_score`, compared against
+  `IntersectionResult.probable_maximum_loss`'s real **TIV-weighted** average. The two coincide
+  exactly when every contributing asset shares one proximity value, whatever their TIVs — nothing
+  spatial for a flat formula to miss — and diverge when proximity varies *and* TIV is unevenly
+  spread across that variation (the codebase's largest asset sitting nearest the edge, say). That
+  divergence, as a fraction of the naive figure, is the number. `total_basis_risk` in
+  `/parametric/summary` keeps summing the magnitude (`vertical_basis_risk`) component only — the
+  portfolio-level headline figure didn't need the full three-part breakdown to stay meaningful.
+
+**Multi-hazard compounding is per-asset, not per-event.** A footprint that's a first hit for one
+asset can be a third hit within 30 days for its neighbour — [`compounding.py`](../app/services/compounding.py)
+holds `COMPOUND_WINDOW_DAYS` (30, a defensible round number in the same spirit as the damage-ratio
+bands, not a calibrated recovery curve — a real figure would vary by asset type and hazard, data
+this pipeline doesn't have) and a `1.15^n` multiplier applied *multiplicatively* per prior
+in-window hit on that specific asset, capped so the resulting ratio never exceeds 1.0 of TIV. The
+prior-hit count is a correlated subquery per asset row inside `_fetch_intersecting_assets()`'s
+existing query (one footprint's worth of assets, no second round trip), not a separate module
+query — `compounding.py` stays a small, dependency-free home for the constants and the pure
+multiplier math so that query has something to import without either service owning the other's
+concern. **This is scoped to the single-event `intersection.py` view; `trends.py`'s grouped join
+does not carry per-asset hit history and doesn't attempt to.** That's a deliberate, not
+accidental, gap: reproducing per-asset compounding inside a period-wide `GROUP BY` would mean a
+correlated subquery nested inside another correlated subquery across the whole join, a much
+heavier query for a check the disclosure report already needs to do per-event anyway (see below).
+The consequence is visible and tested: `/exposure/intersect`'s PML for an event with a compounding
+asset can now be *higher* than the same event's PML from `/trends/hazards` — never lower, equal
+whenever nothing on that event compounds —
+[`test_disclosure_pml_matches_intersection_service`](../tests/test_disclosure.py) checks the
+inequality rather than assuming equality now, with a comment explaining exactly why.
+
+**The disclosure report's "% of period PML attributable to compound exposure" is the one place
+this codebase deliberately loops `run_intersection()` per event.** Every other trend-scale view
+avoids that N+1 pattern on purpose; a period-scoped compounding aggregate needs per-asset hit
+history `run_hazard_trends()`'s grouped join doesn't carry, and a report is a periodic,
+non-interactive document already built from several separate queries (portfolio totals, the
+asset-type breakdown, the distinct-exposed count) — not a per-request dashboard load. Reusing an
+already-correct function once per period event is the better trade against writing a second,
+parallel compounding implementation as one very heavy SQL statement. `compound_pml_pct` divides
+that contribution by `gross_pml` — the same non-deduplicated denominator the report's other
+"share of period PML" figures already use — and is `None`, not a fabricated 0, when there's no
+PML to divide by, matching `protection_gap_pct`'s contract.
+
+**Concentration / accumulation risk grids South Africa's bounding box with `generate_series` +
+`ST_MakeEnvelope`, not `ST_SnapToGrid` or `ST_HexagonGrid`.** Both were on the table; neither fit.
+`ST_SnapToGrid` doesn't generate a grid of cells at all — it snaps an existing geometry's own
+vertex coordinates onto a grid, a different operation, so it can't build the cell set this needs.
+`ST_HexagonGrid` does, but needs PostGIS 3.1+, unconfirmed for wherever this runs — plain
+`generate_series`/`ST_MakeEnvelope` produces the same fixed-size square grid with functions this
+codebase already assumes elsewhere, rather than gating a new feature on a version bump nothing
+else here requires. **Cell size is 1° (~111km)** — coarse on purpose: South Africa's own
+historical event count is small (docs/followup-items.txt's own "5 ZAF-affecting events" figure),
+so a finer grid would leave almost every cell's hazard-density score at exactly 0 or 1 with
+nothing in between, while still fine enough to keep Cape Town, Johannesburg, and Durban in
+separate cells rather than collapsing the country into a handful of regions — worth revisiting
+once real historical volume and a real portfolio replace the demo-scale data both were chosen
+against. [`compute_concentration_index()`](../app/services/trends.py) scores each cell's
+historical hazard density (count of intersecting footprint-bearing events, `iso3`-scoped like
+every other read query even though every cell already sits inside the bounding box by
+construction) against the portfolio's TIV share in it, and combines them as
+`Σ (tiv_share_i)² × density_i` — a Herfindahl-Hirschman index over TIV concentration, weighted so
+TIV sitting in a historically hazard-*free* cell contributes nothing however concentrated it is
+there, and TIV that is both concentrated *and* in a hazard-dense cell compounds both effects, per
+the property this was built to price. `diversification_adjusted_pml = gross_pml × (1 + penalty)`,
+`penalty` capped at 50% of `gross_pml` at the theoretical maximum (index = 1.0, all TIV in the
+single densest cell) — a documented ceiling in the same placeholder spirit as the damage-ratio
+bands and the compounding multiplier, not a catastrophe model's occurrence-exceedance curve. Like
+every other adjustment in this report, it's additive labelling: `diversification_adjusted_pml`
+sits next to `gross_probable_maximum_loss` and `distinct_tiv_exposed`, not in place of them.
+
 ### API layer
 
 Plain `APIRouter` per domain ([health](../app/routes/health.py),
@@ -489,19 +610,36 @@ holds seed data or a worldwide backfill.
 
 - [tests/test_exposure.py](../tests/test_exposure.py) — reuses a real ingested event
   (`FL 1101354`), inserts an inside/outside asset pair, and proves `ST_Intersects` discriminates
-  real geometry (not just "returns something").
+  real geometry (not just "returns something"); also constructs a centroid-vs-edge asset pair
+  (via `ST_PointOnSurface` / `ST_EndPoint(ST_LongestLine(...))`, robust to the real footprint's
+  actual shape) proving damage_ratio genuinely interpolates by proximity, not just by alert level.
 - [tests/test_parametric.py](../tests/test_parametric.py) — rule CRUD, the three payout kinds,
-  the alert-level gate, and that a deactivated / no-longer-firing rule's ledger row is pruned.
+  the alert-level gate, and that a deactivated / no-longer-firing rule's ledger row is pruned;
+  also both `horizontal_basis_risk_flag` cases (a fixed payout firing on zero exposure, and a
+  silent rule sitting on real exposure) and `spatial_basis_risk_pct` at both zero (uniform
+  proximity across contributing assets) and meaningfully nonzero (proximity and TIV diverge)
+  using a synthetic square footprint whose corners are hand-verifiably equidistant from center.
 - [tests/test_disclosure.py](../tests/test_disclosure.py) — report shape, `?from=`/`?to=` period
-  filtering, and that a firing event's PML in the report matches `/exposure/intersect` for the
-  same event (proving the report and the panel share the damage-ratio path).
+  filtering, and that a firing event's PML in the report is never *lower* than `/exposure/intersect`
+  for the same event (equal exactly when nothing on that event compounds — see "Geo-financial risk
+  extensions" for why compounding can now make the two disagree); a compound-exposure test with
+  two overlapping-footprint synthetic events against a shared asset, asserting the flag/multiplier
+  and the period aggregate; and a concentration test comparing the same total TIV clustered in one
+  manufactured hazard-dense cell versus spread across ten separate cells, asserting the clustered
+  case's `diversification_adjusted_pml` is the higher one.
 - [tests/test_global_scope.py](../tests/test_global_scope.py) — inserts a synthetic Indonesian
   flood and confirms it is excluded from `/hazards` (default), `/trends/hazards`, and every
   parametric evaluation, but included in `/hazards?scope=global`, and harmless to
   `run_intersection()` (footprint present, zero SA assets).
 
 The exposure and disclosure suites skip cleanly if their migration (`007` / `008`) hasn't been
-applied. `pytest` is 19/19 against the live DB.
+applied. `pytest` is 26/26 against a live DB (Postgres 16 / PostGIS 3.4, migrations `001`–`010`
+applied) — verified live, including the geo-financial extensions above, and stable across
+repeated runs. One real bug turned up in that run and was fixed as part of it: `get_damage_ratio()`
+used to round its result to 4 decimals, which was harmless pre-Step-1 (one shared ratio per event
+on both read paths) but broke the intersection/trends exact-equality property once
+`intersection.py` started summing independently-rounded per-asset ratios against `trends.py`'s
+single rounding of a weighted average — rounding is now deferred to display time only.
 
 ## Known limitations / deliberate scope boundaries
 
@@ -523,16 +661,40 @@ architectural layer. (The parametric-trigger engine, by contrast, *is* now prese
 - **Cyclone footprints are one cone segment, not a track corridor** — a known, documented
   simplification, not an oversight (see "Footprint selection" above).
 - **PML uses a documented approximation, not a calibrated damage model** — the damage ratio is a
-  HAZUS-MH/FEMA band midpoint selected by `alert_level`, not hazard-specific severity (flood
-  depth, cyclone category) — see "The damage ratio is a documented approximation" above. EAL
-  (Expected Annual Loss) is still a future phase; no code for it exists yet.
+  HAZUS-MH/FEMA band, interpolated by distance from the hazard's centroid (`proximity_score`,
+  see "Geo-financial risk extensions" above) rather than hazard-specific severity (flood depth,
+  cyclone category). Distance-from-centroid is a closer proxy than the old flat midpoint, but it's
+  still a proxy, not the real severity field GDACS doesn't expose. EAL (Expected Annual Loss) is
+  still a future phase; no code for it exists yet.
+- **Compounding and concentration are documented placeholder escalations, not calibrated models**
+  — the `1.15^n` per-prior-hit multiplier
+  ([app/services/compounding.py](../app/services/compounding.py)) and the concentration index's
+  50% maximum PML loading
+  ([app/services/trends.py](../app/services/trends.py):`MAX_CONCENTRATION_PENALTY`) are round,
+  defensible numbers in the same spirit as the damage-ratio bands themselves — not a recovery
+  curve calibrated per asset type/hazard, and not a catastrophe model's occurrence-exceedance
+  curve. Both are stated as such in the disclosure report's methodology section, not presented as
+  researched figures.
 - **Parametric basis risk is measured against modelled PML, not actual loss** — the engine
-  ([app/services/parametric.py](../app/services/parametric.py)) evaluates rules and has a
-  frontend, but `basis_risk = payout − PML`, and PML is itself the documented approximation
-  above. There is no ground-truth loss feed to calibrate against. Rule conditions are also
-  limited to `event_type` / `alert_level` / `severity_value` / country /
-  footprint-intersects-portfolio — no per-hazard physical index (wind speed, flood depth,
-  rainfall) yet, because GDACS doesn't expose those to this pipeline.
+  ([app/services/parametric.py](../app/services/parametric.py)) now decomposes basis risk into
+  `vertical_basis_risk` (payout − PML), `horizontal_basis_risk_flag` (a kind mismatch), and
+  `spatial_basis_risk_pct` (for `tiv_share`/`per_asset` payouts) — but all three still ultimately
+  compare against modelled PML, itself the documented approximation above. There is no
+  ground-truth loss feed to calibrate against. Rule conditions are also limited to `event_type` /
+  `alert_level` / `severity_value` / country / footprint-intersects-portfolio — no per-hazard
+  physical index (wind speed, flood depth, rainfall) yet, because GDACS doesn't expose those to
+  this pipeline.
+- **The parametric ledger's `basis_risk` column was renamed to `vertical_basis_risk` (migration
+  `010`); the frontend has not been updated to match.** `ParametricPanel.jsx` and any other
+  consumer of `/parametric/firings` or `/parametric/evaluate*` still reads the old field name and
+  will see it as missing until it's updated to read `vertical_basis_risk` (and, optionally,
+  `horizontal_basis_risk_flag` / `spatial_basis_risk_pct`) instead. Backend-only work; this is the
+  concrete follow-up it leaves behind.
+- **Compounding is scoped to the single-event `intersection.py` view; `trends.py`'s grouped join
+  does not track per-asset hit history.** A deliberate gap, not an oversight — see "Multi-hazard
+  compounding" above — but it means `/trends/hazards` and `/exposure/intersect` can now disagree
+  on PML for an event with a compounding asset (intersect's figure is always the higher one, never
+  lower), where they used to be guaranteed identical for every event.
 - **Single-country scope: resolved for raw event storage, by design for everything else.**
   `hazard_events` is now worldwide, so the "SA event count is small" concern no longer applies
   to raw storage or to a future pooled-climate ML training set. Assets and every
@@ -565,8 +727,25 @@ a period-scoped Report view.
   SA-scoped view is unchanged (5 ZAF-affecting events).
 - **Light warm-industrial theme** replacing the dark slate/cyan one, with the semantic colour
   re-map and the textured map (see "Visual design language" above).
+- **Geo-financial risk extensions** — distance-decay damage ratio (per-asset `proximity_score`,
+  `compute_pml()` shared by `intersection.py`/`trends.py`), spatial basis-risk decomposition
+  (`vertical_basis_risk` / `horizontal_basis_risk_flag` / `spatial_basis_risk_pct`, migration
+  `010`), multi-hazard compounding (`app/services/compounding.py`, per-asset, intersection-scoped),
+  and portfolio concentration risk (`diversification_adjusted_pml` in the disclosure report). See
+  "Geo-financial risk extensions" above for the full rationale, and "Known limitations" for what
+  each one still doesn't model.
 
-Migrations `001`–`009` are applied; `pytest` is 19/19 against the running DB.
+Migrations `001`–`010` are applied. The existing suites (`test_exposure.py`, `test_parametric.py`,
+`test_disclosure.py`) were extended alongside this work — new interpolation, decomposition,
+compounding, and concentration assertions, plus one existing assertion
+(`test_disclosure_pml_matches_intersection_service`) relaxed from equality to inequality where
+compounding now legitimately makes the two services disagree. **`pytest` is 26/26, verified live**
+against Postgres 16 / PostGIS 3.4 with migrations `001`–`010` applied, stable across repeated runs.
+That run caught one real bug fixed as part of landing this work — `get_damage_ratio()` rounding
+its result before it fed further arithmetic, which broke exact equality between
+`intersection.py`'s per-asset sum and `trends.py`'s single weighted-average calculation (see
+"Geo-financial risk extensions" above) — which is exactly why the "confirm each step's tests
+pass" discipline matters more than a first read-through of the diff, however careful.
 
 | Step | What | Status |
 |---|---|---|
@@ -582,11 +761,27 @@ Migrations `001`–`009` are applied; `pytest` is 19/19 against the running DB.
 **The 8-step build order is done.** New environments: run `schema.sql` as the table owner
 (`climrisk_app` can neither grant itself access, `CREATE TABLE`, nor `CREATE`/`DROP INDEX`).
 
-**Next, outside the build order:**
-- **The 3D globe view** — a frontend view that consumes `GET /hazards?scope=global` (the 453
-  worldwide events already ingested). The palette and the textured-fill treatment are finalised
-  for it; only footprint polygons are missing worldwide — polygon enrichment stays
-  country-scoped, so global events are centroid points only (`docs/followup-items.txt` #5).
+**Done since, also outside the build order:**
+- **Frontend wiring for the geo-financial extensions** — `AssetTable`, `ExposurePanel`, `MapPanel`,
+  `ParametricPanel`, and `ReportPanel` now surface every field Steps 0–4 added
+  (`proximity_score`/`distance_to_edge`/`compound_multiplier`/`is_compound_loss` per asset,
+  `vertical_basis_risk`/`horizontal_basis_risk_flag`/`spatial_basis_risk_pct` per firing,
+  `compound_pml_pct`/`diversification_adjusted_pml` on the report). This closed a live bug:
+  `ParametricPanel` had kept reading `firing.basis_risk`/`basis_risk_pct` after migration `010`
+  renamed the field, so every firing was silently showing a zero bar until this pass.
+- **The 3D globe view** — `GlobePanel.jsx`, a new "Globe" toggle (lazy-loaded like Trends/
+  Parametric/Report) consuming `GET /hazards?scope=global`, rendering every worldwide event as a
+  point on a [`react-globe.gl`](https://github.com/vasturiano/react-globe.gl) globe, coloured by
+  hazard type from the existing palette, sized by alert level. Resolves either a Point or a
+  Polygon/MultiPolygon geometry to one marker position — only the SA-scoped subset has a real
+  footprint (polygon enrichment stays country-scoped, `docs/followup-items.txt` #5), so most
+  worldwide events are still centroid points, exactly as anticipated when this was "next."
+  **The library choice came with a real cost not caught until the build actually ran**:
+  `react-globe.gl` pulls in the full `three.js` engine, and the resulting code-split chunk is
+  ~542kB gzipped — several times the ~150–250kB estimated when the library was picked, and by far
+  the heaviest chunk in the app (`TrendsPanel`'s `recharts` chunk is ~105kB gzipped by comparison).
+  Still zero cost for a session that never opens the Globe view, but worth knowing before treating
+  the estimate that justified the library choice as accurate.
 - **The ML layer (Section 5)** — no Layer 1 forecast-API integrations (Fire Weather Index,
   Google Flood Hub), no Layer 2 model, no `pandas`/`scikit-learn` in `requirements.txt`. The
   master document sequences it after the financial and parametric layers, which are now solid;

@@ -61,6 +61,7 @@ async function request(path, { method = 'GET', body, auth = false } = {}) {
 }
 
 export const fetchHazards = () => request('/hazards')
+export const fetchHazardsGlobal = () => request('/hazards?scope=global')
 export const fetchAssets = () => request('/assets')
 export const fetchIntersection = (hazardEventId) => request(`/exposure/intersect/${hazardEventId}`)
 export const fetchTrends = () => request('/trends/hazards')

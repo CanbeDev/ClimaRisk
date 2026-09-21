@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { AlertTriangle, KeyRound, Loader2, Play, Plus, ShieldAlert, Trash2 } from 'lucide-react'
+import { AlertOctagon, AlertTriangle, KeyRound, Loader2, Play, Plus, ShieldAlert, Trash2 } from 'lucide-react'
 import {
   createTrigger,
   deleteTrigger,
@@ -27,11 +27,14 @@ const PAYOUT_KINDS = [
 const LEDGER_SCALE_DEFAULT = 'linear'
 
 // Returns { widthPct: 0–50 (share of the half-track), over: bool } for one firing.
+// Sized on vertical_basis_risk — the magnitude component (payout vs. modelled
+// loss); horizontal_basis_risk_flag and spatial_basis_risk_pct are shown
+// separately (see LedgerRow) since they're different axes, not more magnitude.
 function barGeometry(firing, domainMax, mode) {
-  const br = firing.basis_risk ?? 0
+  const br = firing.vertical_basis_risk ?? 0
   const over = br > 0
   if (br === 0) return { widthPct: 0, over }
-  const pct = firing.basis_risk_pct
+  const pct = firing.vertical_basis_risk_pct
   // Undefined ratio (a real payout against zero modelled loss) = unbounded
   // overpay — pin it to the full half-track.
   if (pct == null) return { widthPct: 50, over }
@@ -58,7 +61,7 @@ function payoutSummary(t) {
   return `${t.payout_value}`
 }
 
-function basisRiskClass(value) {
+function verticalBasisRiskClass(value) {
   if (value > 0) return 'text-over' // policy overpays vs. modelled loss
   if (value < 0) return 'text-pml' // policy underpays — real shortfall risk
   return 'text-muted'
@@ -305,11 +308,11 @@ export default function ParametricPanel({ summary, triggers, firings, loading, e
   const totalBasis = summary?.total_basis_risk ?? 0
 
   const sortedLedger = useMemo(
-    () => [...ledger].sort((a, b) => Math.abs(b.basis_risk) - Math.abs(a.basis_risk)),
+    () => [...ledger].sort((a, b) => Math.abs(b.vertical_basis_risk) - Math.abs(a.vertical_basis_risk)),
     [ledger],
   )
   const domainMax = useMemo(
-    () => Math.max(0, ...sortedLedger.map((f) => Math.abs(f.basis_risk_pct ?? 0))),
+    () => Math.max(0, ...sortedLedger.map((f) => Math.abs(f.vertical_basis_risk_pct ?? 0))),
     [sortedLedger],
   )
 
@@ -396,7 +399,9 @@ export default function ParametricPanel({ summary, triggers, firings, loading, e
         <div>
           <h2 className="text-sm font-semibold text-ink">Parametric trigger engine</h2>
           <p className="text-[11px] text-muted">
-            Index-based rules and the payout ledger. Basis risk = payout − modelled PML.
+            Index-based rules and the payout ledger. Basis risk splits into magnitude (bar below),
+            kind mismatch (<AlertOctagon className="inline h-3 w-3 align-[-1px]" /> badge), and —
+            for tiv_share/per_asset payouts — a spatial-sizing component.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -587,16 +592,23 @@ export default function ParametricPanel({ summary, triggers, firings, loading, e
             <div className="max-h-[22rem] overflow-y-auto">
               {sortedLedger.map((f) => {
                 const g = barGeometry(f, domainMax, scale)
-                const tone = basisRiskClass(f.basis_risk)
+                const tone = verticalBasisRiskClass(f.vertical_basis_risk)
                 return (
                   <div
                     key={f.id}
                     className="grid grid-cols-[minmax(0,8.5rem)_1fr_5.75rem] items-center gap-3 border-t border-hair px-4 py-2.5 first:border-t-0 hover:bg-row"
                   >
                     <div className="min-w-0">
-                      <div className="truncate text-xs font-medium text-ink">
-                        {f.event_name || `${f.event_type} ${f.event_id}`}
-                        <span className="ml-1 font-normal text-faint">#{f.hazard_event_id}</span>
+                      <div className="flex items-center gap-1 truncate text-xs font-medium text-ink">
+                        <span className="truncate">{f.event_name || `${f.event_type} ${f.event_id}`}</span>
+                        <span className="font-normal text-faint">#{f.hazard_event_id}</span>
+                        {f.horizontal_basis_risk_flag && (
+                          <AlertOctagon
+                            className="h-3 w-3 shrink-0 text-over"
+                            aria-label="Kind mismatch"
+                            title="Kind mismatch: paid on the index with no real exposure behind it, or real exposure this rule stayed silent on."
+                          />
+                        )}
                       </div>
                       <div className="truncate text-[10px] text-muted">{f.trigger_name}</div>
                     </div>
@@ -615,16 +627,25 @@ export default function ParametricPanel({ summary, triggers, firings, loading, e
                         <span>payout {compactCurrency(f.payout_amount)}</span>
                         <span>modelled loss {compactCurrency(f.modelled_loss)}</span>
                       </div>
+                      {f.spatial_basis_risk_pct != null && (
+                        <div
+                          className="mt-0.5 truncate text-[10px] text-faint"
+                          title="Share of the gap attributable to sizing off flat TIV/asset count rather than where the exposed assets actually sit."
+                        >
+                          spatial {f.spatial_basis_risk_pct > 0 ? '+' : ''}
+                          {percent(f.spatial_basis_risk_pct)}
+                        </div>
+                      )}
                     </div>
 
                     <div className="text-right">
                       <div className={`text-xs font-semibold tabular-nums ${tone}`}>
-                        {f.basis_risk > 0 ? '+' : ''}
-                        {compactCurrency(f.basis_risk)}
+                        {f.vertical_basis_risk > 0 ? '+' : ''}
+                        {compactCurrency(f.vertical_basis_risk)}
                       </div>
                       <div className="text-[10px] tabular-nums text-faint">
-                        {f.basis_risk_pct != null
-                          ? `${f.basis_risk_pct > 0 ? '+' : ''}${percent(f.basis_risk_pct)}`
+                        {f.vertical_basis_risk_pct != null
+                          ? `${f.vertical_basis_risk_pct > 0 ? '+' : ''}${percent(f.vertical_basis_risk_pct)}`
                           : 'no modelled loss'}
                       </div>
                     </div>
@@ -636,13 +657,15 @@ export default function ParametricPanel({ summary, triggers, firings, loading, e
         )}
 
         <div className="border-t border-hair px-4 py-2.5 text-[10px] leading-relaxed text-faint">
-          Basis risk = payout − modelled PML, and PML is a HAZUS-MH/FEMA damage-ratio band
-          midpoint, not a measured loss. Bars scale by basis-risk %{' '}
+          Bars scale by vertical basis-risk % (payout vs. modelled PML, itself a distance-decayed
+          HAZUS-MH/FEMA band estimate, not a measured loss){' '}
           {scale === 'compressed'
             ? '(log-compressed, so extreme values stay on-scale)'
             : '(linear — the largest fills the half-track)'}
           . <span className="text-over">Amber</span> overpays, <span className="text-pml">rose</span>{' '}
-          underpays.
+          underpays. <AlertOctagon className="inline h-3 w-3 align-[-1px] text-over" /> flags a kind
+          mismatch (paid on no exposure, or exposure with no payout); "spatial" shows how much of a
+          tiv_share/per_asset payout's gap owes to ignoring where assets sit, not just their TIV.
         </div>
       </div>
     </div>

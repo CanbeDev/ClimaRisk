@@ -38,19 +38,23 @@ function footprintArea(feature) {
   return 0 // Point-only (centroid) events sort to the top — trivial to click.
 }
 
-// One divIcon per TIV tier — a surveyed-node glyph (grey by tier, orange ring)
-// for assets that fall inside the selected footprint.
+// One divIcon per (TIV tier, compound-loss) pair — a surveyed-node glyph (grey
+// by tier, orange ring) for assets that fall inside the selected footprint;
+// the ring turns pml-red for an asset already hit by another event within the
+// compounding window (Step 3) — see .asset-node--compound in index.css.
 const assetIconCache = new Map()
-function assetIcon(tier) {
-  if (assetIconCache.has(tier.label)) return assetIconCache.get(tier.label)
+function assetIcon(tier, compound) {
+  const key = `${tier.label}:${compound}`
+  if (assetIconCache.has(key)) return assetIconCache.get(key)
   const s = tier.size
+  const compoundClass = compound ? ' asset-node--compound' : ''
   const icon = L.divIcon({
     className: 'asset-node-wrap',
-    html: `<span class="asset-node asset-node--${tier.shape}" style="--c:${tier.color};width:${s}px;height:${s}px"></span>`,
+    html: `<span class="asset-node asset-node--${tier.shape}${compoundClass}" style="--c:${tier.color};width:${s}px;height:${s}px"></span>`,
     iconSize: [s, s],
     iconAnchor: [s / 2, s / 2],
   })
-  assetIconCache.set(tier.label, icon)
+  assetIconCache.set(key, icon)
   return icon
 }
 
@@ -83,12 +87,25 @@ function MapLegend() {
             {tier.label}
           </div>
         ))}
+        <div className="mt-1.5 flex items-center gap-2 border-t border-hair pt-1.5">
+          <span className="flex h-3 w-3 items-center justify-center">
+            <span className="h-2 w-2 rounded-full border border-pml" style={{ backgroundColor: '#8a827a' }} />
+          </span>
+          Compound loss — hit again within the window
+        </div>
       </div>
     </div>
   )
 }
 
-export default function MapPanel({ hazards, assets, selectedHazardId, exposedAssetIds, onSelectHazard }) {
+export default function MapPanel({
+  hazards,
+  assets,
+  selectedHazardId,
+  exposedAssetIds,
+  compoundLossAssetIds,
+  onSelectHazard,
+}) {
   const hazardStyle = useMemo(
     () => (feature) => {
       const { event_type: type, hazard_event_id: id, has_footprint } = feature.properties
@@ -175,12 +192,14 @@ export default function MapPanel({ hazards, assets, selectedHazardId, exposedAss
           const [lng, lat] = feature.geometry.coordinates
           const { id, asset_name, asset_type, total_insured_value } = feature.properties
           const isExposed = exposedAssetIds?.has(id)
+          const isCompound = compoundLossAssetIds?.has(id)
           const tooltip = (
             <Tooltip direction="top" offset={[0, -8]} opacity={0.95}>
               <div className="text-xs">
                 <div className="font-semibold">{asset_name || `Asset #${id}`}</div>
                 <div className="text-muted">{asset_type || 'unclassified'}</div>
                 <div>TIV: {currency(total_insured_value)}</div>
+                {isCompound && <div className="text-pml">Compound loss — hit again in the window</div>}
               </div>
             </Tooltip>
           )
@@ -188,7 +207,11 @@ export default function MapPanel({ hazards, assets, selectedHazardId, exposedAss
           // Inside the selected footprint → a shaped, tier-scaled surveyed node.
           if (isExposed) {
             return (
-              <Marker key={id} position={[lat, lng]} icon={assetIcon(getAssetTier(total_insured_value))}>
+              <Marker
+                key={id}
+                position={[lat, lng]}
+                icon={assetIcon(getAssetTier(total_insured_value), isCompound)}
+              >
                 {tooltip}
               </Marker>
             )

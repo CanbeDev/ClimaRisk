@@ -41,6 +41,7 @@ import psycopg2
 
 from app.config import Settings, get_settings
 from app.db.pool import get_connection
+from app.services.damage_ratio import compute_pml
 from app.services.intersection import IntersectionResult, run_intersection
 
 log = logging.getLogger(__name__)
@@ -76,6 +77,24 @@ class ParametricTrigger:
 
 @dataclass
 class TriggerEvaluation:
+    """Step 2: basis risk decomposed into three independent components,
+    rather than one signed `payout - modelled_loss` number that conflated
+    "how far off" with "did the trigger even agree there was a loss."
+
+      * `vertical_basis_risk` — the original magnitude gap (payout minus
+        modelled PML). Meaningful once a payout and a loss both exist.
+      * `horizontal_basis_risk_flag` — a KIND mismatch: the trigger and real
+        exposure disagree on whether there's anything to pay for at all
+        (a fixed payout fired against zero exposed assets, or real exposure
+        existed but this rule stayed silent).
+      * `spatial_basis_risk_pct` — for tiv_share/per_asset payouts (whose
+        SIZE is a function of exposure, unlike fixed): how much of the gap
+        between a naive, position-blind sizing and the real, distance-decayed
+        loss (Step 1) is attributable to *where* the exposed assets sit, not
+        just how much TIV they carry. See `_spatial_basis_risk_pct` below for
+        the exact derivation.
+    """
+
     trigger_id: int
     trigger_name: str
     hazard_event_id: int
@@ -85,17 +104,19 @@ class TriggerEvaluation:
     exposed_tiv: float
     modelled_loss: float
     payout_amount: float
-    basis_risk: float
+    vertical_basis_risk: float
+    horizontal_basis_risk_flag: bool
+    spatial_basis_risk_pct: Optional[float]
     payout_currency: str
 
     @property
-    def basis_risk_pct(self) -> Optional[float]:
-        """Basis risk as a fraction of the modelled loss. None when there is no
-        modelled loss to compare against (a pure index payout on an event that
-        exposed nothing) — the ratio is undefined, not 0."""
+    def vertical_basis_risk_pct(self) -> Optional[float]:
+        """Vertical basis risk as a fraction of the modelled loss. None when
+        there is no modelled loss to compare against (a pure index payout on
+        an event that exposed nothing) — the ratio is undefined, not 0."""
         if self.modelled_loss <= 0:
             return None
-        return self.basis_risk / self.modelled_loss
+        return self.vertical_basis_risk / self.modelled_loss
 
 
 # --------------------------------------------------------------------------- #
@@ -320,6 +341,72 @@ def _size_payout(trigger: ParametricTrigger, exposure: Optional[IntersectionResu
     return 0.0
 
 
+def _horizontal_basis_risk_flag(
+    trigger: ParametricTrigger,
+    fired: bool,
+    exposed_count: int,
+) -> bool:
+    """A KIND mismatch between the trigger and reality, independent of any
+    payout's size:
+
+      * this rule fired (paid) even though zero assets were actually exposed
+        — only possible for a `fixed` payout with `requires_exposed_assets`
+        turned off, i.e. a deliberately blind index; still worth flagging
+        since it means the payout ledger just booked an amount against an
+        event with no underlying exposure at all, or
+      * real exposure existed but this specific rule stayed silent — a
+        coverage gap this instrument's conditions didn't catch.
+
+    Computed for every evaluation, fired or not — a non-firing rule sitting
+    on real exposure is exactly the case an operator reviewing rule coverage
+    needs surfaced, not just a firing rule's own overpay/underpay.
+    """
+    if fired:
+        return trigger.payout_kind == "fixed" and exposed_count == 0
+    return exposed_count > 0
+
+
+def _spatial_basis_risk_pct(
+    trigger: ParametricTrigger,
+    exposure: Optional[IntersectionResult],
+) -> Optional[float]:
+    """The share of the modelled-loss gap attributable to *where* exposed
+    assets sit, not just how much TIV they carry — only meaningful for
+    `tiv_share`/`per_asset` payouts, whose size is a function of the exposed
+    group's TIV/count and nothing else about position.
+
+    `exposure.probable_maximum_loss` (Step 1) is a TIV-*weighted* sum of each
+    asset's own distance-decayed PML — an asset carrying more TIV pulls the
+    event's effective severity toward its own proximity_score. The "naive"
+    comparator a payout sized off flat TIV/count implicitly assumes instead
+    is the *simple*, unweighted average proximity_score across the same
+    assets — as if severity depended only on how the group happens to be
+    distributed in space, not on which specific asset holds the value.
+
+    Those two coincide (spatial component == 0) exactly when every
+    contributing asset shares the same proximity_score, whatever their TIVs —
+    there's no TIV/position correlation for a flat sizing formula to miss.
+    They diverge when proximity varies *and* TIV is unevenly distributed
+    across that variation (e.g. the largest asset sits nearest the edge) —
+    exactly the case a position-blind tiv_share/per_asset payout can't see.
+
+    Returns None for `fixed` payouts (nothing spatial in a flat amount), and
+    whenever there's no exposure (or no naive loss) to compare against.
+    """
+    if trigger.payout_kind not in ("tiv_share", "per_asset"):
+        return None
+    if exposure is None or not exposure.assets:
+        return None
+
+    simple_avg_proximity = sum(a.proximity_score for a in exposure.assets) / len(exposure.assets)
+    naive_pml = compute_pml(
+        exposure.total_insured_value, exposure.event_type, exposure.alert_level, simple_avg_proximity
+    )
+    if naive_pml <= 0:
+        return None
+    return (exposure.probable_maximum_loss - naive_pml) / naive_pml
+
+
 def evaluate_event(
     hazard_event_id: int,
     settings: Optional[Settings] = None,
@@ -373,9 +460,12 @@ def evaluate_event(
                 exposed_tiv=exposed_tiv,
                 modelled_loss=modelled_loss,
                 payout_amount=payout,
-                # Basis risk only means something once the rule pays out; a rule
-                # that didn't fire has no payout to compare against the loss.
-                basis_risk=(payout - modelled_loss) if fired else 0.0,
+                # Vertical basis risk only means something once the rule pays
+                # out; a rule that didn't fire has no payout to compare
+                # against the loss.
+                vertical_basis_risk=(payout - modelled_loss) if fired else 0.0,
+                horizontal_basis_risk_flag=_horizontal_basis_risk_flag(trigger, fired, exposed_count),
+                spatial_basis_risk_pct=_spatial_basis_risk_pct(trigger, exposure) if fired else None,
                 payout_currency=trigger.payout_currency,
             )
         )
@@ -404,17 +494,21 @@ def _persist_evaluations(hazard_event_id: int, evaluations: list[TriggerEvaluati
                         INSERT INTO trigger_firings (
                             trigger_id, hazard_event_id, reason,
                             exposed_asset_count, exposed_tiv, modelled_loss,
-                            payout_amount, basis_risk, payout_currency, evaluated_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                            payout_amount, vertical_basis_risk,
+                            horizontal_basis_risk_flag, spatial_basis_risk_pct,
+                            payout_currency, evaluated_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                         ON CONFLICT (trigger_id, hazard_event_id) DO UPDATE SET
-                            reason              = EXCLUDED.reason,
-                            exposed_asset_count = EXCLUDED.exposed_asset_count,
-                            exposed_tiv         = EXCLUDED.exposed_tiv,
-                            modelled_loss       = EXCLUDED.modelled_loss,
-                            payout_amount       = EXCLUDED.payout_amount,
-                            basis_risk          = EXCLUDED.basis_risk,
-                            payout_currency     = EXCLUDED.payout_currency,
-                            evaluated_at        = now()
+                            reason                      = EXCLUDED.reason,
+                            exposed_asset_count         = EXCLUDED.exposed_asset_count,
+                            exposed_tiv                 = EXCLUDED.exposed_tiv,
+                            modelled_loss               = EXCLUDED.modelled_loss,
+                            payout_amount               = EXCLUDED.payout_amount,
+                            vertical_basis_risk         = EXCLUDED.vertical_basis_risk,
+                            horizontal_basis_risk_flag  = EXCLUDED.horizontal_basis_risk_flag,
+                            spatial_basis_risk_pct      = EXCLUDED.spatial_basis_risk_pct,
+                            payout_currency             = EXCLUDED.payout_currency,
+                            evaluated_at                = now()
                         """,
                         (
                             ev.trigger_id,
@@ -424,7 +518,9 @@ def _persist_evaluations(hazard_event_id: int, evaluations: list[TriggerEvaluati
                             ev.exposed_tiv,
                             ev.modelled_loss,
                             ev.payout_amount,
-                            ev.basis_risk,
+                            ev.vertical_basis_risk,
+                            ev.horizontal_basis_risk_flag,
+                            ev.spatial_basis_risk_pct,
                             ev.payout_currency,
                         ),
                     )
@@ -486,7 +582,8 @@ _FIRING_COLUMNS = """
     f.id, f.trigger_id, t.name, f.hazard_event_id,
     h.event_type, h.event_id, h.episode_id, h.event_name, h.from_date, h.alert_level,
     f.reason, f.exposed_asset_count, f.exposed_tiv, f.modelled_loss,
-    f.payout_amount, f.basis_risk, f.payout_currency, f.evaluated_at
+    f.payout_amount, f.vertical_basis_risk, f.horizontal_basis_risk_flag,
+    f.spatial_basis_risk_pct, f.payout_currency, f.evaluated_at
 """
 
 
@@ -509,10 +606,12 @@ def _row_to_firing(row) -> dict:
         "exposed_tiv": float(row[12]),
         "modelled_loss": modelled,
         "payout_amount": payout,
-        "basis_risk": float(row[15]),
-        "basis_risk_pct": (payout - modelled) / modelled if modelled > 0 else None,
-        "payout_currency": row[16],
-        "evaluated_at": row[17].isoformat() if row[17] else None,
+        "vertical_basis_risk": float(row[15]),
+        "vertical_basis_risk_pct": (payout - modelled) / modelled if modelled > 0 else None,
+        "horizontal_basis_risk_flag": row[16],
+        "spatial_basis_risk_pct": float(row[17]) if row[17] is not None else None,
+        "payout_currency": row[18],
+        "evaluated_at": row[19].isoformat() if row[19] else None,
     }
 
 
@@ -530,7 +629,7 @@ def summary() -> dict:
                     (SELECT count(*) FROM trigger_firings),
                     (SELECT count(DISTINCT hazard_event_id) FROM trigger_firings),
                     (SELECT COALESCE(sum(payout_amount), 0) FROM trigger_firings),
-                    (SELECT COALESCE(sum(basis_risk), 0) FROM trigger_firings)
+                    (SELECT COALESCE(sum(vertical_basis_risk), 0) FROM trigger_firings)
                 """
             )
             row = cur.fetchone()
