@@ -1,4 +1,4 @@
-import { AlertTriangle, DollarSign, MapPinOff, Radar } from 'lucide-react'
+import { AlertTriangle, DollarSign, MapPinOff, Radar, Repeat } from 'lucide-react'
 import { currency, getAlert, getHazardColor, percent } from '../lib/theme'
 import AssetTable from './AssetTable'
 import BiCalculator from './BiCalculator'
@@ -84,9 +84,10 @@ function CoverageBar({ intersection }) {
       </div>
 
       <div className="mt-3 border-t border-hair pt-2 text-[10px] leading-relaxed text-faint">
-        The bar is TIV at risk. PML = TIV × a HAZUS-MH/FEMA band midpoint for this hazard type and
-        GDACS alert level — a documented approximation, not a per-event vulnerability assessment.
-        Protection gap treats any asset with no declared insured value as fully uninsured.
+        The bar is TIV at risk. PML = TIV × a HAZUS-MH/FEMA band ratio for this hazard type and
+        GDACS alert level, interpolated by each asset's distance from the footprint's centroid —
+        a documented approximation, not a per-event vulnerability assessment. Protection gap
+        treats any asset with no declared insured value as fully uninsured.
       </div>
     </div>
   )
@@ -203,6 +204,18 @@ export default function ExposurePanel({ selectedHazardMeta, intersection, portfo
                 {currency(intersection.total_daily_net_revenue)}
               </b>
             </span>
+            {intersection.assets.some((a) => a.is_compound_loss) && (
+              <>
+                <span className="text-hair">·</span>
+                <span className="flex items-center gap-1 text-pml" title="Already hit by another event within the compounding window — their damage ratio is escalated.">
+                  <Repeat className="h-3 w-3" />
+                  <b className="font-semibold tabular-nums">
+                    {intersection.assets.filter((a) => a.is_compound_loss).length}
+                  </b>{' '}
+                  compound loss{intersection.assets.filter((a) => a.is_compound_loss).length === 1 ? '' : 'es'}
+                </span>
+              </>
+            )}
           </div>
 
           {intersection.asset_count > 0 ? (

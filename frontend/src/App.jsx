@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import {
   AlertTriangle,
   FileText,
+  Globe,
   Globe2,
   LineChart,
   Map as MapIcon,
@@ -16,20 +17,24 @@ import {
   fetchDisclosure,
   fetchFirings,
   fetchHazards,
+  fetchHazardsGlobal,
   fetchIntersection,
   fetchParametricSummary,
   fetchTrends,
   fetchTriggers,
 } from './api'
 
-// Code-split the non-default views: Trends pulls in recharts (~450 kB), and most
-// sessions never leave the map. Each loads on first switch to it.
+// Code-split the non-default views: Trends pulls in recharts (~450 kB), Globe
+// pulls in react-globe.gl/three.js (~200 kB), and most sessions never leave
+// the map. Each loads on first switch to it.
 const TrendsPanel = lazy(() => import('./components/TrendsPanel'))
 const ParametricPanel = lazy(() => import('./components/ParametricPanel'))
 const ReportPanel = lazy(() => import('./components/ReportPanel'))
+const GlobePanel = lazy(() => import('./components/GlobePanel'))
 
 const VIEWS = [
   { id: 'map', label: 'Live map', icon: MapIcon },
+  { id: 'globe', label: 'Globe', icon: Globe },
   { id: 'trends', label: 'Trends', icon: LineChart },
   { id: 'parametric', label: 'Parametric', icon: ShieldAlert },
   { id: 'report', label: 'Report', icon: FileText },
@@ -94,6 +99,10 @@ export default function App() {
   const [loadingIntersection, setLoadingIntersection] = useState(false)
   const [intersectionError, setIntersectionError] = useState(null)
 
+  const [globalHazards, setGlobalHazards] = useState(null)
+  const [globalHazardsLoading, setGlobalHazardsLoading] = useState(false)
+  const [globalHazardsError, setGlobalHazardsError] = useState(null)
+
   const [trends, setTrends] = useState(null)
   const [trendsLoading, setTrendsLoading] = useState(false)
   const [trendsError, setTrendsError] = useState(null)
@@ -124,6 +133,19 @@ export default function App() {
   useEffect(() => {
     loadMapData()
   }, [loadMapData])
+
+  const loadGlobalHazards = useCallback(async () => {
+    setGlobalHazardsLoading(true)
+    setGlobalHazardsError(null)
+    try {
+      setGlobalHazards(await fetchHazardsGlobal())
+      setLastSyncAt(Date.now())
+    } catch (err) {
+      setGlobalHazardsError(err.message || 'Failed to load worldwide hazard data')
+    } finally {
+      setGlobalHazardsLoading(false)
+    }
+  }, [])
 
   const loadTrends = useCallback(async () => {
     setTrendsLoading(true)
@@ -171,6 +193,9 @@ export default function App() {
 
   // Lazy-load each non-default view's data the first time it's opened.
   useEffect(() => {
+    if (view === 'globe' && globalHazards == null && !globalHazardsLoading && !globalHazardsError) {
+      loadGlobalHazards()
+    }
     if (view === 'trends' && trends == null && !trendsLoading && !trendsError) loadTrends()
     if (view === 'parametric' && parametric == null && !parametricLoading && !parametricError) {
       loadParametric()
@@ -178,6 +203,10 @@ export default function App() {
     if (view === 'report' && report == null && !reportLoading && !reportError) loadReport()
   }, [
     view,
+    globalHazards,
+    globalHazardsLoading,
+    globalHazardsError,
+    loadGlobalHazards,
     trends,
     trendsLoading,
     trendsError,
@@ -239,6 +268,11 @@ export default function App() {
     return new Set(intersection.assets.map((asset) => asset.id))
   }, [intersection])
 
+  const compoundLossAssetIds = useMemo(() => {
+    if (!intersection) return new Set()
+    return new Set(intersection.assets.filter((asset) => asset.is_compound_loss).map((asset) => asset.id))
+  }, [intersection])
+
   // Portfolio roll-up for the ExposurePanel masthead when nothing is selected —
   // so the hero slot is never empty on load.
   const portfolio = useMemo(() => {
@@ -248,6 +282,13 @@ export default function App() {
   }, [assets, hazards])
 
   const { activeError, activeSpinning, handleRefresh } = useMemo(() => {
+    if (view === 'globe') {
+      return {
+        activeError: globalHazardsError,
+        activeSpinning: globalHazardsLoading,
+        handleRefresh: loadGlobalHazards,
+      }
+    }
     if (view === 'trends') {
       return { activeError: trendsError, activeSpinning: trendsLoading, handleRefresh: loadTrends }
     }
@@ -264,6 +305,9 @@ export default function App() {
     return { activeError: mapError, activeSpinning: mapLoading, handleRefresh: loadMapData }
   }, [
     view,
+    globalHazardsError,
+    globalHazardsLoading,
+    loadGlobalHazards,
     trendsError,
     trendsLoading,
     loadTrends,
@@ -334,6 +378,7 @@ export default function App() {
                 assets={assets}
                 selectedHazardId={selectedHazardId}
                 exposedAssetIds={exposedAssetIds}
+                compoundLossAssetIds={compoundLossAssetIds}
                 onSelectHazard={handleSelectHazard}
               />
             </div>
@@ -360,6 +405,14 @@ export default function App() {
                 </div>
               }
             >
+              {view === 'globe' && (
+                <GlobePanel
+                  hazards={globalHazards}
+                  loading={globalHazardsLoading}
+                  error={globalHazardsError}
+                  onRetry={loadGlobalHazards}
+                />
+              )}
               {view === 'trends' && (
                 <TrendsPanel
                   trends={trends}

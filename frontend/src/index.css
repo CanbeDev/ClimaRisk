@@ -215,6 +215,14 @@ body,
 .asset-node--square { border-radius: 2px; }
 .asset-node--diamond { border-radius: 2px; transform: rotate(45deg) scale(0.82); }
 
+/* Compound-loss variant: already hit by another event within the compounding
+   window (Step 3) — the pml-red ring/glow distinguishes it from the standard
+   brand-orange "exposed" ring, same semantic red used for loss/PML elsewhere. */
+.asset-node--compound {
+  border-color: #e0454a;
+  box-shadow: 0 0 8px rgba(224, 69, 74, 0.75);
+}
+
 /* Warm scrollbars */
 ::-webkit-scrollbar {
   width: 9px;

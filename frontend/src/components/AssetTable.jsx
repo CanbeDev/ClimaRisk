@@ -1,4 +1,5 @@
-import { currency } from '../lib/theme'
+import { Repeat } from 'lucide-react'
+import { currency, percent } from '../lib/theme'
 
 export default function AssetTable({ assets }) {
   const sorted = [...assets].sort((a, b) => b.total_insured_value - a.total_insured_value)
@@ -16,6 +17,7 @@ export default function AssetTable({ assets }) {
               <th className="px-2 py-2 text-left font-medium">Type</th>
               <th className="px-2 py-2 text-right font-medium">TIV</th>
               <th className="px-2 py-2 text-right font-medium">Insured</th>
+              <th className="px-2 py-2 text-right font-medium">Ratio</th>
               <th className="px-4 py-2 text-right font-medium">Contrib. margin/day</th>
             </tr>
           </thead>
@@ -33,6 +35,18 @@ export default function AssetTable({ assets }) {
                   }`}
                 >
                   {asset.insured_value ? currency(asset.insured_value) : 'Uninsured'}
+                </td>
+                <td className="px-2 py-2 text-right tabular-nums text-muted">
+                  <span className="inline-flex items-center gap-1 justify-end">
+                    {asset.is_compound_loss && (
+                      <Repeat
+                        className="h-3 w-3 shrink-0 text-pml"
+                        aria-label="Compound loss"
+                        title={`Hit again within the compounding window — ×${asset.compound_multiplier?.toFixed(2)} on the base ratio.`}
+                      />
+                    )}
+                    {percent(asset.damage_ratio)}
+                  </span>
                 </td>
                 <td className="px-4 py-2 text-right tabular-nums text-muted">
                   {currency(asset.contribution_margin)}
