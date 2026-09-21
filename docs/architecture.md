@@ -633,9 +633,13 @@ holds seed data or a worldwide backfill.
   `run_intersection()` (footprint present, zero SA assets).
 
 The exposure and disclosure suites skip cleanly if their migration (`007` / `008`) hasn't been
-applied. `pytest` was last confirmed 19/19 against a live DB before the geo-financial extensions
-above; that figure predates them and needs re-confirming against a real database, not assumed
-current — see "Current status".
+applied. `pytest` is 26/26 against a live DB (Postgres 16 / PostGIS 3.4, migrations `001`–`010`
+applied) — verified live, including the geo-financial extensions above, and stable across
+repeated runs. One real bug turned up in that run and was fixed as part of it: `get_damage_ratio()`
+used to round its result to 4 decimals, which was harmless pre-Step-1 (one shared ratio per event
+on both read paths) but broke the intersection/trends exact-equality property once
+`intersection.py` started summing independently-rounded per-asset ratios against `trends.py`'s
+single rounding of a weighted average — rounding is now deferred to display time only.
 
 ## Known limitations / deliberate scope boundaries
 
@@ -735,9 +739,13 @@ Migrations `001`–`010` are applied. The existing suites (`test_exposure.py`, `
 `test_disclosure.py`) were extended alongside this work — new interpolation, decomposition,
 compounding, and concentration assertions, plus one existing assertion
 (`test_disclosure_pml_matches_intersection_service`) relaxed from equality to inequality where
-compounding now legitimately makes the two services disagree — but **not re-run against a live
-database as part of this change**; the previously-reported "`pytest` 19/19" figure predates it and
-should not be read as still current until the full suite is actually run again.
+compounding now legitimately makes the two services disagree. **`pytest` is 26/26, verified live**
+against Postgres 16 / PostGIS 3.4 with migrations `001`–`010` applied, stable across repeated runs.
+That run caught one real bug fixed as part of landing this work — `get_damage_ratio()` rounding
+its result before it fed further arithmetic, which broke exact equality between
+`intersection.py`'s per-asset sum and `trends.py`'s single weighted-average calculation (see
+"Geo-financial risk extensions" above) — which is exactly why the "confirm each step's tests
+pass" discipline matters more than a first read-through of the diff, however careful.
 
 | Step | What | Status |
 |---|---|---|
