@@ -76,6 +76,17 @@ def get_damage_ratio(event_type: str, alert_level: str | None, proximity_score: 
 
         ratio = low + (high - low) * proximity_score
 
+    Deliberately unrounded: before Step 1, every asset behind one event got
+    the same band-midpoint ratio, so rounding here was harmless. Now that
+    `intersection.py` calls this once per asset (summing the results) while
+    `trends.py` calls it once per event (on a TIV-weighted average
+    proximity_score), rounding *this* function independently in each caller
+    would round twice — the sum of independently-rounded per-asset ratios is
+    not exactly equal to one rounding of their weighted average, breaking the
+    exact-equality property `compute_pml()` depends on. Round only where a
+    ratio is actually displayed (e.g. formatting for an API response or the
+    disclosure report), never in a value that still feeds further arithmetic.
+
     Always returns a usable float — falls back to `_DEFAULT_BAND` for hazard
     types or alert levels not covered above, logging that the fallback was
     used so it's traceable rather than silently approximate.
@@ -100,7 +111,7 @@ def get_damage_ratio(event_type: str, alert_level: str | None, proximity_score: 
         low, high = band
 
     proximity_score = max(0.0, min(1.0, proximity_score))
-    return round(low + (high - low) * proximity_score, 4)
+    return low + (high - low) * proximity_score
 
 
 def compute_pml(
