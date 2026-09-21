@@ -761,11 +761,27 @@ pass" discipline matters more than a first read-through of the diff, however car
 **The 8-step build order is done.** New environments: run `schema.sql` as the table owner
 (`climrisk_app` can neither grant itself access, `CREATE TABLE`, nor `CREATE`/`DROP INDEX`).
 
-**Next, outside the build order:**
-- **The 3D globe view** — a frontend view that consumes `GET /hazards?scope=global` (the 453
-  worldwide events already ingested). The palette and the textured-fill treatment are finalised
-  for it; only footprint polygons are missing worldwide — polygon enrichment stays
-  country-scoped, so global events are centroid points only (`docs/followup-items.txt` #5).
+**Done since, also outside the build order:**
+- **Frontend wiring for the geo-financial extensions** — `AssetTable`, `ExposurePanel`, `MapPanel`,
+  `ParametricPanel`, and `ReportPanel` now surface every field Steps 0–4 added
+  (`proximity_score`/`distance_to_edge`/`compound_multiplier`/`is_compound_loss` per asset,
+  `vertical_basis_risk`/`horizontal_basis_risk_flag`/`spatial_basis_risk_pct` per firing,
+  `compound_pml_pct`/`diversification_adjusted_pml` on the report). This closed a live bug:
+  `ParametricPanel` had kept reading `firing.basis_risk`/`basis_risk_pct` after migration `010`
+  renamed the field, so every firing was silently showing a zero bar until this pass.
+- **The 3D globe view** — `GlobePanel.jsx`, a new "Globe" toggle (lazy-loaded like Trends/
+  Parametric/Report) consuming `GET /hazards?scope=global`, rendering every worldwide event as a
+  point on a [`react-globe.gl`](https://github.com/vasturiano/react-globe.gl) globe, coloured by
+  hazard type from the existing palette, sized by alert level. Resolves either a Point or a
+  Polygon/MultiPolygon geometry to one marker position — only the SA-scoped subset has a real
+  footprint (polygon enrichment stays country-scoped, `docs/followup-items.txt` #5), so most
+  worldwide events are still centroid points, exactly as anticipated when this was "next."
+  **The library choice came with a real cost not caught until the build actually ran**:
+  `react-globe.gl` pulls in the full `three.js` engine, and the resulting code-split chunk is
+  ~542kB gzipped — several times the ~150–250kB estimated when the library was picked, and by far
+  the heaviest chunk in the app (`TrendsPanel`'s `recharts` chunk is ~105kB gzipped by comparison).
+  Still zero cost for a session that never opens the Globe view, but worth knowing before treating
+  the estimate that justified the library choice as accurate.
 - **The ML layer (Section 5)** — no Layer 1 forecast-API integrations (Fire Weather Index,
   Google Flood Hub), no Layer 2 model, no `pandas`/`scikit-learn` in `requirements.txt`. The
   master document sequences it after the financial and parametric layers, which are now solid;
